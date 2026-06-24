@@ -33,3 +33,9 @@ export type StoredRunSnapshot = {
   checkpoints: Checkpoint[];
   diagnosis: DiagnosisResult | null;
 };
+
+export type StoredRunSnapshotEnvelope = {
+  envelopeVersion: '1.0.0';
+  exportedAt: string;
+  snapshot: StoredRunSnapshot;
+};

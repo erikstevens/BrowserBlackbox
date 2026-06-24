@@ -1,11 +1,18 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { DomainValidationError } from '@browser-blackbox/domain';
 import { describe, expect, it } from 'vitest';
 import {
   applyMigrations,
   countAppliedMigrations,
   createInMemoryDatabase,
   createSqliteEngine,
+  deserializeSnapshotEnvelope,
+  FileBackedSqliteStore,
   listTables,
   migrations,
+  serializeSnapshotEnvelope,
   SqliteRunRepository,
   storedRunSnapshotFixture,
 } from './index';
@@ -83,5 +90,50 @@ describe('sqlite run repository', async () => {
 
     const repository = new SqliteRunRepository(database);
     expect(repository.loadSnapshot('missing-flow')).toBeNull();
+  });
+});
+
+describe('file-backed sqlite store', async () => {
+  const sql = await createSqliteEngine();
+
+  it('persists a run snapshot to disk and reloads it', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'browser-blackbox-persistence-'));
+    const databasePath = join(directory, 'run-store.sqlite');
+
+    try {
+      const writer = new FileBackedSqliteStore(sql, databasePath);
+      await writer.saveSnapshot(storedRunSnapshotFixture);
+      writer.close();
+
+      const reader = new FileBackedSqliteStore(sql, databasePath);
+      const loaded = await reader.loadSnapshot(storedRunSnapshotFixture.flow.flowId);
+      reader.close();
+
+      expect(loaded).toEqual(storedRunSnapshotFixture);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('snapshot envelope serialization', () => {
+  it('round-trips a stored snapshot through deterministic JSON', () => {
+    const serialized = serializeSnapshotEnvelope(storedRunSnapshotFixture);
+    const envelope = deserializeSnapshotEnvelope(serialized);
+
+    expect(envelope.envelopeVersion).toBe('1.0.0');
+    expect(envelope.snapshot).toEqual(storedRunSnapshotFixture);
+  });
+
+  it('rejects malformed snapshot envelopes', () => {
+    expect(() =>
+      deserializeSnapshotEnvelope(
+        JSON.stringify({
+          envelopeVersion: '1.0.0',
+          exportedAt: 'not-a-date',
+          snapshot: storedRunSnapshotFixture,
+        }),
+      ),
+    ).toThrow(DomainValidationError);
   });
 });
