@@ -1,7 +1,14 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
 import { join } from 'node:path';
+import { BrowserSessionManager } from '@browser-blackbox/runtime-browser';
+import type {
+  BrowserLaunchRequest,
+  BrowserRuntimeCommandResult,
+  BrowserRuntimeState,
+} from '@browser-blackbox/runtime-browser';
 
 const isDev = !app.isPackaged;
+const browserSessionManager = new BrowserSessionManager();
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -28,7 +35,25 @@ function createWindow(): void {
   void window.loadFile(join(__dirname, '../renderer/index.html'));
 }
 
+function registerIpcHandlers(): void {
+  ipcMain.handle('browser-runtime:get-state', async (): Promise<BrowserRuntimeState> => {
+    return browserSessionManager.getState();
+  });
+
+  ipcMain.handle(
+    'browser-runtime:launch',
+    async (_event, request: BrowserLaunchRequest): Promise<BrowserRuntimeCommandResult> => {
+      return browserSessionManager.launch(request);
+    },
+  );
+
+  ipcMain.handle('browser-runtime:stop', async (): Promise<BrowserRuntimeCommandResult> => {
+    return browserSessionManager.stop();
+  });
+}
+
 app.whenReady().then(() => {
+  registerIpcHandlers();
   createWindow();
 
   app.on('activate', () => {
@@ -42,4 +67,8 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('before-quit', () => {
+  void browserSessionManager.stop();
 });

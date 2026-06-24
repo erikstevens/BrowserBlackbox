@@ -4,6 +4,7 @@
     { "path": "./apps/desktop/tsconfig.json" },
     { "path": "./packages/domain/tsconfig.json" },
     { "path": "./packages/persistence/tsconfig.json" },
+    { "path": "./packages/runtime-browser/tsconfig.json" },
     { "path": "./packages/shared/tsconfig.json" },
     { "path": "./packages/ui-state/tsconfig.json" }
   ]
