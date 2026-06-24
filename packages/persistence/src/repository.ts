@@ -35,6 +35,7 @@ export class SqliteRunRepository {
       this.deleteFlow(snapshot.flow.flowId);
       this.insertSession(snapshot);
       this.insertFlow(snapshot);
+      this.insertProjection(snapshot);
       this.insertSteps(snapshot.flow.flowId, snapshot.steps);
       this.insertRequestCaptures(snapshot.flow.flowId, snapshot.captures);
       this.insertRedactionRules(snapshot.flow.flowId, snapshot.redactionRules);
@@ -73,6 +74,17 @@ export class SqliteRunRepository {
       throw new Error(`Flow ${flowId} is missing its parent session`);
     }
 
+    const projectionRows = queryRows(
+      this.database,
+      `SELECT projection_id, kind, source_bundle_path, source_artifact_format_version, created_at, updated_at
+       FROM flow_projections WHERE flow_id = ?;`,
+      [flowId],
+    );
+
+    if (projectionRows.length === 0) {
+      throw new Error(`Flow ${flowId} is missing its projection record`);
+    }
+
     const manifest = parseArtifactManifest(JSON.parse(String(flowRow.manifest_json)));
     const diagnosisRows = queryRows(
       this.database,
@@ -81,6 +93,20 @@ export class SqliteRunRepository {
     );
 
     return {
+      projection: {
+        projectionId: String(projectionRows[0].projection_id),
+        kind: projectionRows[0].kind as StoredRunSnapshot['projection']['kind'],
+        sourceBundlePath:
+          projectionRows[0].source_bundle_path === null
+            ? undefined
+            : String(projectionRows[0].source_bundle_path),
+        sourceArtifactFormatVersion:
+          projectionRows[0].source_artifact_format_version === null
+            ? undefined
+            : String(projectionRows[0].source_artifact_format_version),
+        createdAt: String(projectionRows[0].created_at),
+        updatedAt: String(projectionRows[0].updated_at),
+      },
       session: {
         sessionId: String(sessionRows[0].session_id),
         runId: String(sessionRows[0].run_id),
@@ -155,6 +181,7 @@ export class SqliteRunRepository {
     this.database.run(`DELETE FROM checkpoints WHERE flow_id = ?;`, [flowId]);
     this.database.run(`DELETE FROM diagnosis_results WHERE flow_id = ?;`, [flowId]);
     this.database.run(`DELETE FROM artifacts WHERE flow_id = ?;`, [flowId]);
+    this.database.run(`DELETE FROM flow_projections WHERE flow_id = ?;`, [flowId]);
     this.database.run(`DELETE FROM flows WHERE flow_id = ?;`, [flowId]);
     this.database.run(
       `
@@ -204,6 +231,25 @@ export class SqliteRunRepository {
         snapshot.flow.schemaVersion,
         snapshot.flow.createdAt,
         deterministicSerialize(snapshot.manifest),
+      ],
+    );
+  }
+
+  private insertProjection(snapshot: StoredRunSnapshot): void {
+    this.database.run(
+      `
+      INSERT INTO flow_projections (
+        projection_id, flow_id, kind, source_bundle_path, source_artifact_format_version, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?);
+      `,
+      [
+        snapshot.projection.projectionId,
+        snapshot.flow.flowId,
+        snapshot.projection.kind,
+        snapshot.projection.sourceBundlePath ?? null,
+        snapshot.projection.sourceArtifactFormatVersion ?? null,
+        snapshot.projection.createdAt,
+        snapshot.projection.updatedAt,
       ],
     );
   }

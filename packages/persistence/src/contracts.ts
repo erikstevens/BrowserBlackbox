@@ -9,7 +9,17 @@ import type {
   TimelineEvent,
 } from '@browser-blackbox/domain';
 
+export type StoredRunProjection = {
+  projectionId: string;
+  kind: 'working-copy' | 'reopened-artifact';
+  sourceBundlePath?: string;
+  sourceArtifactFormatVersion?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type StoredRunSnapshot = {
+  projection: StoredRunProjection;
   session: {
     sessionId: string;
     runId: string;

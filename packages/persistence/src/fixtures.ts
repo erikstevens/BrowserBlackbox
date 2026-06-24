@@ -13,6 +13,12 @@ import {
 import type { StoredRunSnapshot } from './contracts';
 
 export const storedRunSnapshotFixture: StoredRunSnapshot = {
+  projection: {
+    projectionId: 'projection-working-001',
+    kind: 'working-copy',
+    createdAt: '2026-06-24T15:00:00.000Z',
+    updatedAt: '2026-06-24T15:00:10.000Z',
+  },
   session: {
     sessionId: 'session-001',
     runId: artifactManifestFixture.runId,

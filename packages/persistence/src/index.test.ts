@@ -45,6 +45,7 @@ describe('persistence migrations', async () => {
         'checkpoints',
         'diagnosis_results',
         'artifacts',
+        'flow_projections',
       ]),
     );
   });
@@ -94,6 +95,34 @@ describe('sqlite run repository', async () => {
 
     const repository = new SqliteRunRepository(database);
     expect(repository.loadSnapshot('missing-flow')).toBeNull();
+  });
+
+  it('persists reopened artifact projections separately from working copies', () => {
+    const database = createInMemoryDatabase(sql);
+    applyMigrations(database);
+
+    const repository = new SqliteRunRepository(database);
+    const reopenedSnapshot = {
+      ...storedRunSnapshotFixture,
+      projection: {
+        projectionId: 'projection-reopened-001',
+        kind: 'reopened-artifact' as const,
+        sourceBundlePath: 'C:/runs/run-001',
+        sourceArtifactFormatVersion: '1.0.0',
+        createdAt: '2026-06-24T17:00:00.000Z',
+        updatedAt: '2026-06-24T17:00:00.000Z',
+      },
+      flow: {
+        ...storedRunSnapshotFixture.flow,
+        flowId: 'flow-002',
+      },
+    };
+
+    repository.saveSnapshot(storedRunSnapshotFixture);
+    repository.saveSnapshot(reopenedSnapshot);
+
+    expect(repository.loadSnapshot('flow-001')?.projection.kind).toBe('working-copy');
+    expect(repository.loadSnapshot('flow-002')?.projection).toEqual(reopenedSnapshot.projection);
   });
 });
 

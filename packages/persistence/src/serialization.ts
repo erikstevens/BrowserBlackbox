@@ -95,6 +95,10 @@ export function parseStoredRunSnapshot(value: unknown): StoredRunSnapshot {
 
   const issues: string[] = [];
 
+  if (!isRecord(value.projection)) {
+    issues.push('projection must be an object');
+  }
+
   if (!isRecord(value.session)) {
     issues.push('session must be an object');
   }
@@ -107,8 +111,49 @@ export function parseStoredRunSnapshot(value: unknown): StoredRunSnapshot {
     throw new DomainValidationError('StoredRunSnapshot', issues);
   }
 
+  const projection = value.projection as UnknownRecord;
   const session = value.session as UnknownRecord;
   const flow = value.flow as UnknownRecord;
+
+  const projectionIssues = [
+    ['projection.projectionId', projection.projectionId],
+    ['projection.createdAt', projection.createdAt],
+    ['projection.updatedAt', projection.updatedAt],
+  ].flatMap(([field, entry]) => {
+    if (field === 'projection.createdAt' || field === 'projection.updatedAt') {
+      return isIsoTimestamp(entry) ? [] : [`${field} must be an ISO timestamp`];
+    }
+    return isNonEmptyString(entry) ? [] : [`${field} must be valid`];
+  });
+
+  if (projection.kind !== 'working-copy' && projection.kind !== 'reopened-artifact') {
+    projectionIssues.push('projection.kind must be working-copy or reopened-artifact');
+  }
+
+  if (
+    projection.sourceBundlePath !== undefined &&
+    !isNonEmptyString(projection.sourceBundlePath)
+  ) {
+    projectionIssues.push('projection.sourceBundlePath must be valid when provided');
+  }
+
+  if (
+    projection.sourceArtifactFormatVersion !== undefined &&
+    !isNonEmptyString(projection.sourceArtifactFormatVersion)
+  ) {
+    projectionIssues.push(
+      'projection.sourceArtifactFormatVersion must be valid when provided',
+    );
+  }
+
+  if (
+    projection.kind === 'reopened-artifact' &&
+    !isNonEmptyString(projection.sourceArtifactFormatVersion)
+  ) {
+    projectionIssues.push(
+      'projection.sourceArtifactFormatVersion is required for reopened-artifact projections',
+    );
+  }
 
   const sessionIssues = [
     ['session.sessionId', session.sessionId],
@@ -139,7 +184,7 @@ export function parseStoredRunSnapshot(value: unknown): StoredRunSnapshot {
     return isNonEmptyString(entry) ? [] : [`${field} must be valid`];
   });
 
-  issues.push(...sessionIssues, ...flowIssues);
+  issues.push(...projectionIssues, ...sessionIssues, ...flowIssues);
 
   if (!Array.isArray(value.steps)) {
     issues.push('steps must be an array');
@@ -165,6 +210,20 @@ export function parseStoredRunSnapshot(value: unknown): StoredRunSnapshot {
   }
 
   return {
+    projection: {
+      projectionId: String(projection.projectionId),
+      kind: projection.kind as StoredRunSnapshot['projection']['kind'],
+      sourceBundlePath:
+        projection.sourceBundlePath === undefined
+          ? undefined
+          : String(projection.sourceBundlePath),
+      sourceArtifactFormatVersion:
+        projection.sourceArtifactFormatVersion === undefined
+          ? undefined
+          : String(projection.sourceArtifactFormatVersion),
+      createdAt: String(projection.createdAt),
+      updatedAt: String(projection.updatedAt),
+    },
     session: {
       sessionId: String(session.sessionId),
       runId: String(session.runId),
