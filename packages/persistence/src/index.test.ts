@@ -1,9 +1,10 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { DomainValidationError } from '@browser-blackbox/domain';
+import { ARTIFACT_FORMAT_VERSION, DomainValidationError } from '@browser-blackbox/domain';
 import { describe, expect, it } from 'vitest';
 import {
+  assessArtifactManifestCompatibility,
   applyMigrations,
   countAppliedMigrations,
   createInMemoryDatabase,
@@ -12,9 +13,12 @@ import {
   FileBackedSqliteStore,
   listTables,
   migrations,
+  readArtifactBundle,
   serializeSnapshotEnvelope,
+  storedArtifactContentsFixture,
   SqliteRunRepository,
   storedRunSnapshotFixture,
+  writeArtifactBundle,
 } from './index';
 
 describe('persistence migrations', async () => {
@@ -135,5 +139,60 @@ describe('snapshot envelope serialization', () => {
         }),
       ),
     ).toThrow(DomainValidationError);
+  });
+});
+
+describe('artifact bundle io', () => {
+  it('writes and reads a reopenable artifact bundle', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'browser-blackbox-bundle-'));
+
+    try {
+      await writeArtifactBundle({
+        rootDirectory: directory,
+        snapshot: storedRunSnapshotFixture,
+        artifactContents: storedArtifactContentsFixture,
+      });
+
+      const bundle = await readArtifactBundle(directory);
+
+      expect(bundle.snapshot).toEqual(storedRunSnapshotFixture);
+      expect(bundle.manifest).toEqual(storedRunSnapshotFixture.manifest);
+      expect(bundle.missingOptionalArtifacts).toEqual(['media/video/session.webm']);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('fails clearly when a present required artifact payload is missing', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'browser-blackbox-bundle-'));
+
+    try {
+      await expect(
+        writeArtifactBundle({
+          rootDirectory: directory,
+          snapshot: storedRunSnapshotFixture,
+          artifactContents: {},
+        }),
+      ).rejects.toThrow('present artifact generated/test.spec.ts is missing file content');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('reports unsupported artifact versions', () => {
+    const compatibility = assessArtifactManifestCompatibility(
+      {
+        ...storedRunSnapshotFixture.manifest,
+        artifactFormatVersion: '3.0.0',
+      },
+      ARTIFACT_FORMAT_VERSION,
+    );
+
+    expect(compatibility).toEqual({
+      ok: false,
+      reason: 'unsupported-version',
+      manifestVersion: '3.0.0',
+      supportedMajorVersions: [1],
+    });
   });
 });

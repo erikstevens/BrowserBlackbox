@@ -73,3 +73,21 @@ export const storedRunSnapshotFixture: StoredRunSnapshot = {
   checkpoints: [checkpointFixture],
   diagnosis: diagnosisResultFixture,
 };
+
+export const storedArtifactContentsFixture: Record<string, string> = {
+  'generated/test.spec.ts': `import { test, expect } from '@playwright/test';\n\ntest('login flow', async ({ page }) => {\n  await page.goto('https://example.test/login');\n  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();\n});\n`,
+  'logs/timeline.json': JSON.stringify(
+    {
+      events: storedRunSnapshotFixture.timeline,
+    },
+    null,
+    2,
+  ),
+  'network/api-capture.json': JSON.stringify(
+    {
+      captures: storedRunSnapshotFixture.captures,
+    },
+    null,
+    2,
+  ),
+};

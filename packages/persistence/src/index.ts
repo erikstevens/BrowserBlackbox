@@ -1,3 +1,4 @@
+export * from './bundle';
 export * from './contracts';
 export * from './file-store';
 export * from './fixtures';

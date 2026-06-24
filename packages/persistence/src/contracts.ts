@@ -39,3 +39,27 @@ export type StoredRunSnapshotEnvelope = {
   exportedAt: string;
   snapshot: StoredRunSnapshot;
 };
+
+export type ArtifactBundleWriteInput = {
+  rootDirectory: string;
+  snapshot: StoredRunSnapshot;
+  artifactContents?: Record<string, string>;
+};
+
+export type ArtifactBundleReadResult = {
+  manifest: StoredRunSnapshot['manifest'];
+  snapshot: StoredRunSnapshot;
+  missingOptionalArtifacts: string[];
+};
+
+export type ArtifactCompatibilityAssessment =
+  | {
+      ok: true;
+      supportedMajorVersions: number[];
+    }
+  | {
+      ok: false;
+      reason: 'unsupported-version';
+      manifestVersion: string;
+      supportedMajorVersions: number[];
+    };
