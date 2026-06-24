@@ -69,15 +69,15 @@ export function App() {
               <p className="section-label">Workspace baseline</p>
               <p className="hero-card-copy">
                 The renderer now talks to a managed main-process browser runtime through a
-                strict preload API. Chromium still launches in its own Playwright-managed
-                window for this slice.
+                strict preload API, and the shell now reserves an embedded browser pane
+                inside the workspace.
               </p>
             </section>
           </div>
         </header>
 
         <section className="content-grid">
-          <article className="panel">
+          <article className="panel control-panel">
             <p className="section-label">Target launch</p>
             <label className="field-label" htmlFor="target-url">
               Target URL
@@ -132,7 +132,40 @@ export function App() {
             </div>
           </article>
 
-          <article className="panel">
+          <article className="panel browser-pane-panel">
+            <p className="section-label">Embedded browser pane</p>
+            <div className="embedded-pane-placeholder">
+              <div className="embedded-pane-header">
+                <span className="embedded-pane-dot" />
+                <span className="embedded-pane-dot" />
+                <span className="embedded-pane-dot" />
+              </div>
+              <div className="embedded-pane-copy">
+                <h2 className="embedded-pane-title">Main-process browser surface</h2>
+                <p className="embedded-pane-text">
+                  The right side of the workspace is now reserved for an embedded browser
+                  pane owned outside the renderer process.
+                </p>
+                <ul className="lane-list">
+                  <li className="lane-item">
+                    The embedded pane is hosted by Electron in the main process, not by React.
+                  </li>
+                  <li className="lane-item">
+                    This slice embeds the workspace browser surface, but Playwright automation
+                    still launches its own managed Chromium target separately.
+                  </li>
+                  <li className="lane-item">
+                    The next runtime slices need to unify the embedded pane, Playwright target,
+                    and CDP capture path into one managed browser runtime.
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </article>
+        </section>
+
+        <section className="content-grid">
+          <article className="panel full-width-panel">
             <p className="section-label">Architecture lanes</p>
             <ul className="lane-list">
               <li className="lane-item">
