@@ -1,0 +1,19 @@
+{
+  "name": "@browser-blackbox/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview"
+  },
+  "dependencies": {
+    "@browser-blackbox/domain": "0.1.0",
+    "@browser-blackbox/shared": "0.1.0",
+    "@browser-blackbox/ui-state": "0.1.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zustand": "^5.0.6"
+  }
+}
