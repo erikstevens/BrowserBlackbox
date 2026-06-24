@@ -14,6 +14,7 @@ export type BrowserRuntimeState = {
   targetUrl: string | null;
   pageUrl: string | null;
   sessionId: string | null;
+  playwrightAttached: boolean;
   cdpAttached: boolean;
   lastError: string | null;
 };
@@ -23,10 +24,6 @@ export type BrowserRuntimeCommandResult = {
 };
 
 export type ManagedBrowserSurface = {
-  attachDebugger: (protocolVersion: string) => void;
-  detachDebugger: () => void;
+  getCdpEndpoint: () => string;
   getURL: () => string;
-  isDebuggerAttached: () => boolean;
-  loadURL: (targetUrl: string) => Promise<void>;
-  sendDebuggerCommand: (method: string, params?: Record<string, unknown>) => Promise<void>;
 };

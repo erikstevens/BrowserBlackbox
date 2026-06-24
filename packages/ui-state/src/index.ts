@@ -7,6 +7,7 @@ type WorkspaceState = {
     targetUrl: string | null;
     pageUrl: string | null;
     sessionId: string | null;
+    playwrightAttached: boolean;
     cdpAttached: boolean;
     lastError: string | null;
   };
@@ -21,6 +22,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     targetUrl: null,
     pageUrl: null,
     sessionId: null,
+    playwrightAttached: false,
     cdpAttached: false,
     lastError: null,
   },

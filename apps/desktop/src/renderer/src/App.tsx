@@ -16,6 +16,7 @@ export function App() {
         targetUrl: null,
         pageUrl: null,
         sessionId: null,
+        playwrightAttached: false,
         cdpAttached: false,
         lastError: error instanceof Error ? error.message : String(error),
       });
@@ -32,6 +33,7 @@ export function App() {
       setBrowserRuntime({
         ...browserRuntime,
         phase: 'error',
+        playwrightAttached: browserRuntime.playwrightAttached,
         cdpAttached: browserRuntime.cdpAttached,
         lastError: error instanceof Error ? error.message : String(error),
       });
@@ -50,6 +52,7 @@ export function App() {
       setBrowserRuntime({
         ...browserRuntime,
         phase: 'error',
+        playwrightAttached: browserRuntime.playwrightAttached,
         cdpAttached: browserRuntime.cdpAttached,
         lastError: error instanceof Error ? error.message : String(error),
       });
@@ -72,8 +75,8 @@ export function App() {
               <p className="section-label">Workspace baseline</p>
               <p className="hero-card-copy">
                 The renderer now talks to a managed main-process browser runtime through a
-                strict preload API, and the shell now reserves an embedded browser pane
-                inside the workspace.
+                strict preload API, and the shell now routes Playwright plus CDP control
+                into the embedded browser pane inside the workspace.
               </p>
             </section>
           </div>
@@ -130,6 +133,12 @@ export function App() {
                 </span>
               </p>
               <p className="status-row">
+                <span className="status-label">Playwright</span>
+                <span className="status-value">
+                  {browserRuntime.playwrightAttached ? 'Attached' : 'Not attached'}
+                </span>
+              </p>
+              <p className="status-row">
                 <span className="status-label">CDP</span>
                 <span className="status-value">
                   {browserRuntime.cdpAttached ? 'Attached' : 'Not attached'}
@@ -152,21 +161,21 @@ export function App() {
               <div className="embedded-pane-copy">
                 <h2 className="embedded-pane-title">Main-process browser surface</h2>
                 <p className="embedded-pane-text">
-                  The right side of the workspace is now the managed browser runtime target.
-                  Launching a session drives the embedded pane directly and attaches CDP in
-                  the main process.
+                  The right side of the workspace is the managed browser runtime target.
+                  Launching a session now attaches Playwright over CDP to that same embedded
+                  Chromium surface instead of steering a separate browser session.
                 </p>
                 <ul className="lane-list">
                   <li className="lane-item">
                     The embedded pane is hosted by Electron in the main process, not by React.
                   </li>
                   <li className="lane-item">
-                    Runtime session ownership is now unified to the embedded browser surface,
-                    so the workspace and runtime no longer point at different browser sessions.
+                    Runtime session ownership stays unified to the embedded browser surface,
+                    so the workspace and runtime do not drift into different browser targets.
                   </li>
                   <li className="lane-item">
-                    The next runtime slices need to reintroduce Playwright-aligned control on
-                    top of this unified surface and expand CDP instrumentation beyond attach/load.
+                    The next runtime slices can build recorder, inspection, and network capture
+                    on top of a Playwright-first control plane with deeper CDP instrumentation.
                   </li>
                 </ul>
               </div>
@@ -186,8 +195,8 @@ export function App() {
                 contracts.
               </li>
               <li className="lane-item">
-                `packages/runtime-browser` now owns the Playwright session lifecycle in the
-                Electron main process.
+                `packages/runtime-browser` now owns the Playwright-over-CDP session lifecycle
+                in the Electron main process.
               </li>
               <li className="lane-item">
                 `packages/ui-state` is the initial renderer state surface using Zustand.

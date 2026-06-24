@@ -10,12 +10,18 @@ import type {
 
 const isDev = !app.isPackaged;
 const browserSessionManager = new BrowserSessionManager();
+const REMOTE_DEBUGGING_HOST = '127.0.0.1';
+const REMOTE_DEBUGGING_PORT = 9333;
 const SIDEBAR_WIDTH = 460;
 const WINDOW_PADDING = 20;
 const WINDOW_TOP_OFFSET = 110;
+const EMBEDDED_PANE_TITLE = 'Browser Blackbox Embedded Surface';
 
 let mainWindow: BrowserWindow | null = null;
 let workspaceBrowserView: BrowserView | null = null;
+
+app.commandLine.appendSwitch('remote-debugging-address', REMOTE_DEBUGGING_HOST);
+app.commandLine.appendSwitch('remote-debugging-port', String(REMOTE_DEBUGGING_PORT));
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -102,38 +108,10 @@ function updateWorkspaceBrowserViewBounds(): void {
   workspaceBrowserView.setAutoResize({ width: true, height: true });
 }
 
-async function loadWorkspaceBrowserPane(targetUrl: string): Promise<void> {
-  if (workspaceBrowserView === null) {
-    return;
-  }
-
-  await workspaceBrowserView.webContents.loadURL(targetUrl);
-}
-
 function createEmbeddedSurfaceAdapter(view: BrowserView): ManagedBrowserSurface {
   return {
-    attachDebugger: (protocolVersion) => {
-      if (!view.webContents.debugger.isAttached()) {
-        view.webContents.debugger.attach(protocolVersion);
-      }
-    },
-    detachDebugger: () => {
-      if (view.webContents.debugger.isAttached()) {
-        view.webContents.debugger.detach();
-      }
-    },
+    getCdpEndpoint: () => `http://${REMOTE_DEBUGGING_HOST}:${REMOTE_DEBUGGING_PORT}`,
     getURL: () => view.webContents.getURL(),
-    isDebuggerAttached: () => view.webContents.debugger.isAttached(),
-    loadURL: async (targetUrl) => {
-      await loadWorkspaceBrowserPane(targetUrl);
-    },
-    sendDebuggerCommand: async (method, params) => {
-      if (!view.webContents.debugger.isAttached()) {
-        throw new Error('CDP debugger is not attached to the embedded browser surface.');
-      }
-
-      await view.webContents.debugger.sendCommand(method, params);
-    },
   };
 }
 
@@ -144,6 +122,9 @@ async function clearWorkspaceBrowserPane(): Promise<void> {
 
   const html = `
     <html>
+      <head>
+        <title>${EMBEDDED_PANE_TITLE}</title>
+      </head>
       <body style="margin:0;font-family:IBM Plex Sans,system-ui,sans-serif;background:#101922;color:#f4f1ea;display:grid;place-items:center;height:100vh;">
         <div style="max-width:420px;padding:24px;text-align:center;line-height:1.6;">
           <p style="margin:0 0 8px;color:#9eb0c2;font-size:12px;letter-spacing:0.22em;text-transform:uppercase;">Embedded Pane</p>

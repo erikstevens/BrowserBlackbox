@@ -3,22 +3,62 @@ import type { ManagedBrowserSurface } from './contracts';
 import { BrowserSessionManager } from './manager';
 
 function createSurfaceStub(): ManagedBrowserSurface {
-  let attached = false;
   let pageUrl = 'about:blank';
 
   return {
-    attachDebugger: () => {
-      attached = true;
-    },
-    detachDebugger: () => {
-      attached = false;
-    },
+    getCdpEndpoint: () => 'http://127.0.0.1:9333',
     getURL: () => pageUrl,
-    isDebuggerAttached: () => attached,
-    loadURL: async (targetUrl) => {
+  };
+}
+
+function createConnectorStub() {
+  const sentCommands: string[] = [];
+  const navigatedUrls: string[] = [];
+  let disconnected = false;
+  let detached = false;
+  let pageUrl = 'about:blank';
+
+  const page = {
+    context: () => context,
+    goto: async (targetUrl: string) => {
       pageUrl = targetUrl;
+      navigatedUrls.push(targetUrl);
     },
-    sendDebuggerCommand: async () => undefined,
+    url: () => pageUrl,
+  };
+
+  const cdpSession = {
+    detach: async () => {
+      detached = true;
+    },
+    send: async (method: string) => {
+      sentCommands.push(method);
+      return undefined;
+    },
+  };
+
+  const context = {
+    newCDPSession: async () => cdpSession,
+    pages: () => [page],
+  };
+
+  const browser = {
+    contexts: () => [context],
+    close: async () => {
+      disconnected = true;
+    },
+  };
+
+  return {
+    connector: {
+      connect: async () => browser,
+    },
+    state: {
+      detached: () => detached,
+      disconnected: () => disconnected,
+      navigatedUrls: () => [...navigatedUrls],
+      sentCommands: () => [...sentCommands],
+    },
   };
 }
 
@@ -31,6 +71,7 @@ describe('BrowserSessionManager', () => {
       targetUrl: null,
       pageUrl: null,
       sessionId: null,
+      playwrightAttached: false,
       cdpAttached: false,
       lastError: null,
     });
@@ -50,13 +91,17 @@ describe('BrowserSessionManager', () => {
   });
 
   it('launches and stops against the registered embedded surface', async () => {
-    const manager = new BrowserSessionManager();
+    const connectorStub = createConnectorStub();
+    const manager = new BrowserSessionManager(connectorStub.connector);
     manager.registerSurface(createSurfaceStub());
 
     const launch = await manager.launch({ targetUrl: 'https://example.com/' });
     expect(launch.state.phase).toBe('running');
     expect(launch.state.pageUrl).toBe('https://example.com/');
+    expect(launch.state.playwrightAttached).toBe(true);
     expect(launch.state.cdpAttached).toBe(true);
+    expect(connectorStub.state.sentCommands()).toEqual(['Page.enable', 'Network.enable']);
+    expect(connectorStub.state.navigatedUrls()).toEqual(['https://example.com/']);
 
     const stop = await manager.stop();
     expect(stop.state).toEqual({
@@ -64,8 +109,11 @@ describe('BrowserSessionManager', () => {
       targetUrl: null,
       pageUrl: null,
       sessionId: null,
+      playwrightAttached: false,
       cdpAttached: false,
       lastError: null,
     });
+    expect(connectorStub.state.detached()).toBe(true);
+    expect(connectorStub.state.disconnected()).toBe(true);
   });
 });
