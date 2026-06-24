@@ -4,6 +4,7 @@ import { BrowserSessionManager } from '@browser-blackbox/runtime-browser';
 import type {
   BrowserLaunchRequest,
   BrowserRuntimeCommandResult,
+  ManagedBrowserSurface,
   BrowserRuntimeState,
 } from '@browser-blackbox/runtime-browser';
 
@@ -39,6 +40,7 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     mainWindow = null;
     workspaceBrowserView = null;
+    browserSessionManager.unregisterSurface();
   });
 
   if (isDev && process.env.ELECTRON_RENDERER_URL) {
@@ -58,9 +60,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     'browser-runtime:launch',
     async (_event, request: BrowserLaunchRequest): Promise<BrowserRuntimeCommandResult> => {
-      const result = await browserSessionManager.launch(request);
-      await loadWorkspaceBrowserPane(request.targetUrl);
-      return result;
+      return browserSessionManager.launch(request);
     },
   );
 
@@ -80,6 +80,7 @@ function attachWorkspaceBrowserView(window: BrowserWindow): void {
     },
   });
 
+  browserSessionManager.registerSurface(createEmbeddedSurfaceAdapter(workspaceBrowserView));
   window.setBrowserView(workspaceBrowserView);
   workspaceBrowserView.setBackgroundColor('#101922');
   updateWorkspaceBrowserViewBounds();
@@ -107,6 +108,33 @@ async function loadWorkspaceBrowserPane(targetUrl: string): Promise<void> {
   }
 
   await workspaceBrowserView.webContents.loadURL(targetUrl);
+}
+
+function createEmbeddedSurfaceAdapter(view: BrowserView): ManagedBrowserSurface {
+  return {
+    attachDebugger: (protocolVersion) => {
+      if (!view.webContents.debugger.isAttached()) {
+        view.webContents.debugger.attach(protocolVersion);
+      }
+    },
+    detachDebugger: () => {
+      if (view.webContents.debugger.isAttached()) {
+        view.webContents.debugger.detach();
+      }
+    },
+    getURL: () => view.webContents.getURL(),
+    isDebuggerAttached: () => view.webContents.debugger.isAttached(),
+    loadURL: async (targetUrl) => {
+      await loadWorkspaceBrowserPane(targetUrl);
+    },
+    sendDebuggerCommand: async (method, params) => {
+      if (!view.webContents.debugger.isAttached()) {
+        throw new Error('CDP debugger is not attached to the embedded browser surface.');
+      }
+
+      await view.webContents.debugger.sendCommand(method, params);
+    },
+  };
 }
 
 async function clearWorkspaceBrowserPane(): Promise<void> {

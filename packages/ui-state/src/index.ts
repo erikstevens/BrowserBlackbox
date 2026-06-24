@@ -7,6 +7,7 @@ type WorkspaceState = {
     targetUrl: string | null;
     pageUrl: string | null;
     sessionId: string | null;
+    cdpAttached: boolean;
     lastError: string | null;
   };
   setTargetUrl: (targetUrl: string) => void;
@@ -20,6 +21,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     targetUrl: null,
     pageUrl: null,
     sessionId: null,
+    cdpAttached: false,
     lastError: null,
   },
   setTargetUrl: (targetUrl) => set({ targetUrl }),

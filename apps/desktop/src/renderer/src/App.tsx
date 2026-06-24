@@ -16,6 +16,7 @@ export function App() {
         targetUrl: null,
         pageUrl: null,
         sessionId: null,
+        cdpAttached: false,
         lastError: error instanceof Error ? error.message : String(error),
       });
     });
@@ -31,6 +32,7 @@ export function App() {
       setBrowserRuntime({
         ...browserRuntime,
         phase: 'error',
+        cdpAttached: browserRuntime.cdpAttached,
         lastError: error instanceof Error ? error.message : String(error),
       });
     } finally {
@@ -48,6 +50,7 @@ export function App() {
       setBrowserRuntime({
         ...browserRuntime,
         phase: 'error',
+        cdpAttached: browserRuntime.cdpAttached,
         lastError: error instanceof Error ? error.message : String(error),
       });
     } finally {
@@ -126,6 +129,12 @@ export function App() {
                   {browserRuntime.sessionId ?? 'No active session'}
                 </span>
               </p>
+              <p className="status-row">
+                <span className="status-label">CDP</span>
+                <span className="status-value">
+                  {browserRuntime.cdpAttached ? 'Attached' : 'Not attached'}
+                </span>
+              </p>
               {browserRuntime.lastError ? (
                 <p className="runtime-error">{browserRuntime.lastError}</p>
               ) : null}
@@ -143,20 +152,21 @@ export function App() {
               <div className="embedded-pane-copy">
                 <h2 className="embedded-pane-title">Main-process browser surface</h2>
                 <p className="embedded-pane-text">
-                  The right side of the workspace is now reserved for an embedded browser
-                  pane owned outside the renderer process.
+                  The right side of the workspace is now the managed browser runtime target.
+                  Launching a session drives the embedded pane directly and attaches CDP in
+                  the main process.
                 </p>
                 <ul className="lane-list">
                   <li className="lane-item">
                     The embedded pane is hosted by Electron in the main process, not by React.
                   </li>
                   <li className="lane-item">
-                    This slice embeds the workspace browser surface, but Playwright automation
-                    still launches its own managed Chromium target separately.
+                    Runtime session ownership is now unified to the embedded browser surface,
+                    so the workspace and runtime no longer point at different browser sessions.
                   </li>
                   <li className="lane-item">
-                    The next runtime slices need to unify the embedded pane, Playwright target,
-                    and CDP capture path into one managed browser runtime.
+                    The next runtime slices need to reintroduce Playwright-aligned control on
+                    top of this unified surface and expand CDP instrumentation beyond attach/load.
                   </li>
                 </ul>
               </div>

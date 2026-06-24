@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import type {
   BrowserLaunchRequest,
   BrowserRuntimeCommandResult,
+  ManagedBrowserSurface,
   BrowserRuntimeState,
 } from './contracts';
 
@@ -11,17 +11,25 @@ const DEFAULT_STATE: BrowserRuntimeState = {
   targetUrl: null,
   pageUrl: null,
   sessionId: null,
+  cdpAttached: false,
   lastError: null,
 };
 
 export class BrowserSessionManager {
-  private browser: Browser | null = null;
-  private context: BrowserContext | null = null;
-  private page: Page | null = null;
+  private surface: ManagedBrowserSurface | null = null;
   private state: BrowserRuntimeState = DEFAULT_STATE;
 
   getState(): BrowserRuntimeState {
     return { ...this.state };
+  }
+
+  registerSurface(surface: ManagedBrowserSurface): void {
+    this.surface = surface;
+  }
+
+  unregisterSurface(): void {
+    this.surface = null;
+    this.state = { ...DEFAULT_STATE };
   }
 
   async launch(request: BrowserLaunchRequest): Promise<BrowserRuntimeCommandResult> {
@@ -43,26 +51,35 @@ export class BrowserSessionManager {
       throw new Error('Target URL must use http or https.');
     }
 
+    if (this.surface === null) {
+      throw new Error('Embedded browser surface is not attached.');
+    }
+
     await this.stop();
     this.state = {
       phase: 'launching',
       targetUrl: parsedUrl.toString(),
       pageUrl: null,
       sessionId: null,
+      cdpAttached: false,
       lastError: null,
     };
 
     try {
-      this.browser = await chromium.launch({ headless: false });
-      this.context = await this.browser.newContext();
-      this.page = await this.context.newPage();
-      await this.page.goto(parsedUrl.toString(), { waitUntil: 'domcontentloaded' });
+      if (!this.surface.isDebuggerAttached()) {
+        this.surface.attachDebugger('1.3');
+      }
+
+      await this.surface.sendDebuggerCommand('Page.enable');
+      await this.surface.sendDebuggerCommand('Network.enable');
+      await this.surface.loadURL(parsedUrl.toString());
 
       this.state = {
         phase: 'running',
         targetUrl: parsedUrl.toString(),
-        pageUrl: this.page.url(),
+        pageUrl: this.surface.getURL(),
         sessionId: randomUUID(),
+        cdpAttached: this.surface.isDebuggerAttached(),
         lastError: null,
       };
 
@@ -74,9 +91,10 @@ export class BrowserSessionManager {
         targetUrl: parsedUrl.toString(),
         pageUrl: null,
         sessionId: null,
+        cdpAttached: this.surface?.isDebuggerAttached() ?? false,
         lastError: message,
       };
-      await this.disposeBrowser();
+      await this.disposeSurface();
       throw new Error(message);
     }
   }
@@ -89,22 +107,18 @@ export class BrowserSessionManager {
     this.state = {
       ...this.state,
       phase: 'stopping',
+      cdpAttached: this.surface?.isDebuggerAttached() ?? false,
       lastError: null,
     };
 
-    await this.disposeBrowser();
+    await this.disposeSurface();
     this.state = { ...DEFAULT_STATE };
     return { state: this.getState() };
   }
 
-  private async disposeBrowser(): Promise<void> {
-    const browser = this.browser;
-    this.page = null;
-    this.context = null;
-    this.browser = null;
-
-    if (browser !== null) {
-      await browser.close();
+  private async disposeSurface(): Promise<void> {
+    if (this.surface !== null && this.surface.isDebuggerAttached()) {
+      this.surface.detachDebugger();
     }
   }
 }
