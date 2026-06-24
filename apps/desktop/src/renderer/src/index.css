@@ -178,6 +178,22 @@
     @apply bg-[rgba(220,38,38,0.2)];
   }
 
+  .status-health-idle {
+    @apply bg-[rgba(158,176,194,0.1)];
+  }
+
+  .status-health-healthy {
+    @apply bg-[rgba(82,182,154,0.18)];
+  }
+
+  .status-health-degraded {
+    @apply bg-[rgba(231,111,81,0.18)];
+  }
+
+  .status-health-error {
+    @apply bg-[rgba(220,38,38,0.2)];
+  }
+
   .runtime-error {
     @apply m-0 leading-[1.6] text-red-300;
   }
@@ -207,6 +223,51 @@
 
   .embedded-pane-text {
     @apply m-0 leading-[1.7] text-shell-muted;
+  }
+
+  .event-stream {
+    @apply mt-5 grid gap-3;
+  }
+
+  .event-row {
+    @apply rounded-2xl border border-shell-border bg-black/10 p-4;
+  }
+
+  .event-meta {
+    @apply flex flex-wrap items-center gap-2 text-[0.75rem] uppercase tracking-[0.16em] text-shell-muted;
+  }
+
+  .event-badge {
+    @apply rounded-full border border-shell-border px-2 py-1 text-[0.65rem] font-semibold;
+  }
+
+  .event-info {
+    @apply bg-white/5 text-shell-text;
+  }
+
+  .event-warn {
+    @apply bg-[rgba(231,111,81,0.18)] text-shell-text;
+  }
+
+  .event-error {
+    @apply bg-[rgba(220,38,38,0.2)] text-red-100;
+  }
+
+  .event-category,
+  .event-time {
+    @apply text-shell-muted;
+  }
+
+  .event-message {
+    @apply mb-0 mt-3 text-[0.98rem] leading-[1.6] text-shell-text;
+  }
+
+  .event-detail {
+    @apply mb-0 mt-2 break-words text-sm leading-[1.6] text-shell-muted;
+  }
+
+  .empty-state {
+    @apply m-0 rounded-2xl border border-dashed border-shell-border bg-black/10 p-5 leading-[1.7] text-shell-muted;
   }
 }
 

@@ -5,23 +5,36 @@ import { useWorkspaceStore } from '@browser-blackbox/ui-state';
 export function App() {
   const url = useWorkspaceStore((state) => state.targetUrl);
   const browserRuntime = useWorkspaceStore((state) => state.browserRuntime);
+  const runtimeHealth = useWorkspaceStore((state) => state.runtimeHealth);
+  const runtimeEvents = useWorkspaceStore((state) => state.runtimeEvents);
   const setUrl = useWorkspaceStore((state) => state.setTargetUrl);
   const setBrowserRuntime = useWorkspaceStore((state) => state.setBrowserRuntime);
+  const setRuntimeDiagnostics = useWorkspaceStore((state) => state.setRuntimeDiagnostics);
+  const pushRuntimeUpdate = useWorkspaceStore((state) => state.pushRuntimeUpdate);
   const [pendingAction, setPendingAction] = useState<'launch' | 'stop' | null>(null);
 
   useEffect(() => {
-    void window.desktopShell.getBrowserRuntimeState().then(setBrowserRuntime).catch((error) => {
-      setBrowserRuntime({
-        phase: 'error',
-        targetUrl: null,
-        pageUrl: null,
-        sessionId: null,
-        playwrightAttached: false,
-        cdpAttached: false,
-        lastError: error instanceof Error ? error.message : String(error),
+    void window.desktopShell
+      .getBrowserRuntimeDiagnostics()
+      .then(setRuntimeDiagnostics)
+      .catch((error) => {
+        setBrowserRuntime({
+          phase: 'error',
+          targetUrl: null,
+          pageUrl: null,
+          sessionId: null,
+          playwrightAttached: false,
+          cdpAttached: false,
+          lastError: error instanceof Error ? error.message : String(error),
+        });
       });
+
+    const unsubscribe = window.desktopShell.onBrowserRuntimeEvent((update) => {
+      pushRuntimeUpdate(update);
     });
-  }, [setBrowserRuntime]);
+
+    return unsubscribe;
+  }, [pushRuntimeUpdate, setBrowserRuntime, setRuntimeDiagnostics]);
 
   async function launchManagedChromium(): Promise<void> {
     setPendingAction('launch');
@@ -75,8 +88,8 @@ export function App() {
               <p className="section-label">Workspace baseline</p>
               <p className="hero-card-copy">
                 The renderer now talks to a managed main-process browser runtime through a
-                strict preload API, and the shell now routes Playwright plus CDP control
-                into the embedded browser pane inside the workspace.
+                strict preload API, and this slice adds a live runtime event stream plus
+                visible health reporting on top of the embedded Playwright-plus-CDP surface.
               </p>
             </section>
           </div>
@@ -119,6 +132,12 @@ export function App() {
                 </span>
               </p>
               <p className="status-row">
+                <span className="status-label">Health</span>
+                <span className={`status-pill status-health-${runtimeHealth.status}`}>
+                  {runtimeHealth.status}
+                </span>
+              </p>
+              <p className="status-row">
                 <span className="status-label">Target</span>
                 <span className="status-value">{browserRuntime.targetUrl ?? 'Not launched'}</span>
               </p>
@@ -144,8 +163,25 @@ export function App() {
                   {browserRuntime.cdpAttached ? 'Attached' : 'Not attached'}
                 </span>
               </p>
+              <p className="status-row">
+                <span className="status-label">Recent events</span>
+                <span className="status-value">{runtimeHealth.recentEventCount}</span>
+              </p>
+              <p className="status-row">
+                <span className="status-label">Subscribers</span>
+                <span className="status-value">{runtimeHealth.subscriberCount}</span>
+              </p>
+              <p className="status-row">
+                <span className="status-label">Last event</span>
+                <span className="status-value">
+                  {runtimeHealth.lastEventAt ? formatTimestamp(runtimeHealth.lastEventAt) : 'No events yet'}
+                </span>
+              </p>
               {browserRuntime.lastError ? (
                 <p className="runtime-error">{browserRuntime.lastError}</p>
+              ) : null}
+              {!browserRuntime.lastError && runtimeHealth.lastError ? (
+                <p className="runtime-error">{runtimeHealth.lastError}</p>
               ) : null}
             </div>
           </article>
@@ -174,11 +210,37 @@ export function App() {
                     so the workspace and runtime do not drift into different browser targets.
                   </li>
                   <li className="lane-item">
-                    The next runtime slices can build recorder, inspection, and network capture
-                    on top of a Playwright-first control plane with deeper CDP instrumentation.
+                    The runtime now publishes lifecycle, browser, console, and network events
+                    into the renderer without exposing unsafe direct browser access.
                   </li>
                 </ul>
               </div>
+            </div>
+          </article>
+        </section>
+
+        <section className="content-grid">
+          <article className="panel full-width-panel">
+            <p className="section-label">Runtime event stream</p>
+            <div className="event-stream">
+              {runtimeEvents.length === 0 ? (
+                <p className="empty-state">
+                  No runtime events captured yet. Launch a session to inspect lifecycle,
+                  browser, console, and network activity.
+                </p>
+              ) : (
+                runtimeEvents.map((event) => (
+                  <div className="event-row" key={event.id}>
+                    <div className="event-meta">
+                      <span className={`event-badge event-${event.level}`}>{event.level}</span>
+                      <span className="event-category">{event.category}</span>
+                      <span className="event-time">{formatTimestamp(event.timestamp)}</span>
+                    </div>
+                    <p className="event-message">{event.message}</p>
+                    {event.detail ? <p className="event-detail">{event.detail}</p> : null}
+                  </div>
+                ))
+              )}
             </div>
           </article>
         </section>
@@ -196,7 +258,7 @@ export function App() {
               </li>
               <li className="lane-item">
                 `packages/runtime-browser` now owns the Playwright-over-CDP session lifecycle
-                in the Electron main process.
+                and emits the runtime event feed consumed in the Electron main process.
               </li>
               <li className="lane-item">
                 `packages/ui-state` is the initial renderer state surface using Zustand.
@@ -207,4 +269,12 @@ export function App() {
       </div>
     </main>
   );
+}
+
+function formatTimestamp(timestamp: string): string {
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }

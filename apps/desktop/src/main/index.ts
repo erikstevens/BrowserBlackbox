@@ -1,7 +1,12 @@
 import { app, BrowserView, BrowserWindow, ipcMain } from 'electron';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { BrowserSessionManager } from '@browser-blackbox/runtime-browser';
 import type {
+  BrowserRuntimeDiagnostics,
+  BrowserRuntimeEvent,
+  BrowserRuntimeHealth,
+  BrowserRuntimeUpdate,
   BrowserLaunchRequest,
   BrowserRuntimeCommandResult,
   ManagedBrowserSurface,
@@ -16,12 +21,24 @@ const SIDEBAR_WIDTH = 460;
 const WINDOW_PADDING = 20;
 const WINDOW_TOP_OFFSET = 110;
 const EMBEDDED_PANE_TITLE = 'Browser Blackbox Embedded Surface';
+const MAX_RUNTIME_EVENTS = 80;
 
 let mainWindow: BrowserWindow | null = null;
 let workspaceBrowserView: BrowserView | null = null;
+let runtimeEvents: BrowserRuntimeEvent[] = [];
+let runtimeHealth: BrowserRuntimeHealth = {
+  status: 'idle',
+  lastEventAt: null,
+  lastError: null,
+  recentEventCount: 0,
+  subscriberCount: 0,
+};
 
 app.commandLine.appendSwitch('remote-debugging-address', REMOTE_DEBUGGING_HOST);
 app.commandLine.appendSwitch('remote-debugging-port', String(REMOTE_DEBUGGING_PORT));
+browserSessionManager.subscribe((event) => {
+  publishRuntimeEvent(event);
+});
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -47,6 +64,7 @@ function createWindow(): void {
     mainWindow = null;
     workspaceBrowserView = null;
     browserSessionManager.unregisterSurface();
+    runtimeHealth = deriveRuntimeHealth(browserSessionManager.getState(), runtimeEvents, 0);
   });
 
   if (isDev && process.env.ELECTRON_RENDERER_URL) {
@@ -63,6 +81,10 @@ function registerIpcHandlers(): void {
     return browserSessionManager.getState();
   });
 
+  ipcMain.handle('browser-runtime:get-diagnostics', async (): Promise<BrowserRuntimeDiagnostics> => {
+    return getRuntimeDiagnostics();
+  });
+
   ipcMain.handle(
     'browser-runtime:launch',
     async (_event, request: BrowserLaunchRequest): Promise<BrowserRuntimeCommandResult> => {
@@ -74,6 +96,23 @@ function registerIpcHandlers(): void {
     const result = await browserSessionManager.stop();
     await clearWorkspaceBrowserPane();
     return result;
+  });
+
+  ipcMain.on('browser-runtime:subscribe', (event) => {
+    runtimeHealth = deriveRuntimeHealth(
+      browserSessionManager.getState(),
+      runtimeEvents,
+      runtimeHealth.subscriberCount + 1,
+    );
+    event.sender.send('browser-runtime:diagnostics-sync', getRuntimeDiagnostics());
+  });
+
+  ipcMain.on('browser-runtime:unsubscribe', () => {
+    runtimeHealth = deriveRuntimeHealth(
+      browserSessionManager.getState(),
+      runtimeEvents,
+      Math.max(0, runtimeHealth.subscriberCount - 1),
+    );
   });
 }
 
@@ -89,6 +128,7 @@ function attachWorkspaceBrowserView(window: BrowserWindow): void {
   browserSessionManager.registerSurface(createEmbeddedSurfaceAdapter(workspaceBrowserView));
   window.setBrowserView(workspaceBrowserView);
   workspaceBrowserView.setBackgroundColor('#101922');
+  registerWorkspaceBrowserListeners(workspaceBrowserView);
   updateWorkspaceBrowserViewBounds();
   void clearWorkspaceBrowserPane();
 }
@@ -138,6 +178,131 @@ async function clearWorkspaceBrowserPane(): Promise<void> {
   await workspaceBrowserView.webContents.loadURL(
     `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
   );
+}
+
+function registerWorkspaceBrowserListeners(view: BrowserView): void {
+  view.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    const severity = level >= 2 ? 'error' : level === 1 ? 'warn' : 'info';
+    publishRuntimeEvent({
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      category: 'console',
+      level: severity,
+      message,
+      detail: `${sourceId}:${line}`,
+    });
+  });
+
+  view.webContents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
+    if (!isMainFrame) {
+      return;
+    }
+
+    publishRuntimeEvent({
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      category: 'browser',
+      level: 'info',
+      message: `Navigation started for ${url}.`,
+      detail: isInPlace ? 'In-place navigation' : 'Full navigation',
+    });
+  });
+
+  view.webContents.on('did-navigate', (_event, url) => {
+    publishRuntimeEvent({
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      category: 'browser',
+      level: 'info',
+      message: `Navigation committed for ${url}.`,
+    });
+  });
+
+  view.webContents.on(
+    'did-fail-load',
+    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame) {
+        return;
+      }
+
+      publishRuntimeEvent({
+        id: randomUUID(),
+        timestamp: new Date().toISOString(),
+        category: 'browser',
+        level: 'error',
+        message: `Navigation failed for ${validatedURL}.`,
+        detail: `${errorCode}: ${errorDescription}`,
+      });
+    },
+  );
+
+  view.webContents.on('render-process-gone', (_event, details) => {
+    publishRuntimeEvent({
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      category: 'browser',
+      level: 'error',
+      message: 'Embedded browser render process exited unexpectedly.',
+      detail: `${details.reason}${details.exitCode ? ` (${details.exitCode})` : ''}`,
+    });
+  });
+}
+
+function publishRuntimeEvent(event: BrowserRuntimeEvent): void {
+  runtimeEvents = [event, ...runtimeEvents].slice(0, MAX_RUNTIME_EVENTS);
+  runtimeHealth = deriveRuntimeHealth(
+    browserSessionManager.getState(),
+    runtimeEvents,
+    runtimeHealth.subscriberCount,
+  );
+
+  if (mainWindow === null) {
+    return;
+  }
+
+  const update: BrowserRuntimeUpdate = {
+    state: browserSessionManager.getState(),
+    health: runtimeHealth,
+    event,
+  };
+  mainWindow.webContents.send('browser-runtime:event', update);
+}
+
+function getRuntimeDiagnostics(): BrowserRuntimeDiagnostics {
+  return {
+    state: browserSessionManager.getState(),
+    health: runtimeHealth,
+    recentEvents: runtimeEvents,
+  };
+}
+
+function deriveRuntimeHealth(
+  state: BrowserRuntimeState,
+  events: BrowserRuntimeEvent[],
+  subscriberCount: number,
+): BrowserRuntimeHealth {
+  let status: BrowserRuntimeHealth['status'] = 'idle';
+
+  if (state.phase === 'idle') {
+    status = 'idle';
+  } else if (state.phase === 'error' || state.lastError !== null) {
+    status = 'error';
+  } else if (state.phase === 'running' && state.playwrightAttached && state.cdpAttached) {
+    status = 'healthy';
+  } else if (state.phase === 'launching' || state.phase === 'stopping') {
+    status = 'degraded';
+  }
+
+  return {
+    status,
+    lastEventAt: events[0]?.timestamp ?? null,
+    lastError:
+      state.phase === 'idle'
+        ? null
+        : state.lastError ?? events.find((event) => event.level === 'error')?.message ?? null,
+    recentEventCount: events.length,
+    subscriberCount,
+  };
 }
 
 app.whenReady().then(() => {

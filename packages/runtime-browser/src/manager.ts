@@ -3,12 +3,19 @@ import { chromium } from 'playwright';
 import type {
   BrowserLaunchRequest,
   BrowserRuntimeCommandResult,
+  BrowserRuntimeEvent,
+  BrowserRuntimeEventCategory,
+  BrowserRuntimeEventLevel,
   ManagedBrowserSurface,
   BrowserRuntimeState,
 } from './contracts';
 
 type ConnectedCdpSession = {
   detach: () => Promise<void>;
+  on: (
+    event: 'event',
+    listener: (data: { method: string; params?: Record<string, unknown> }) => void,
+  ) => void;
   send: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
 };
 
@@ -44,6 +51,7 @@ const DEFAULT_STATE: BrowserRuntimeState = {
 export class BrowserSessionManager {
   private browser: ConnectedBrowser | null = null;
   private cdpSession: ConnectedCdpSession | null = null;
+  private listeners = new Set<(event: BrowserRuntimeEvent) => void>();
   private surface: ManagedBrowserSurface | null = null;
   private state: BrowserRuntimeState = DEFAULT_STATE;
 
@@ -51,6 +59,13 @@ export class BrowserSessionManager {
 
   getState(): BrowserRuntimeState {
     return { ...this.state };
+  }
+
+  subscribe(listener: (event: BrowserRuntimeEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   registerSurface(surface: ManagedBrowserSurface): void {
@@ -95,14 +110,22 @@ export class BrowserSessionManager {
       cdpAttached: false,
       lastError: null,
     };
+    this.emitEvent('lifecycle', 'info', `Launching managed browser session for ${parsedUrl.toString()}.`);
 
     try {
       const browser = await this.connector.connect(this.surface.getCdpEndpoint());
+      this.emitEvent('lifecycle', 'info', 'Playwright attached to the embedded Chromium target.');
+
       const page = await this.resolveEmbeddedPage(browser, this.surface.getURL());
       const cdpSession = await page.context().newCDPSession(page);
+      cdpSession.on('event', ({ method, params }) => {
+        this.handleCdpEvent(method, params);
+      });
 
       await cdpSession.send('Page.enable');
       await cdpSession.send('Network.enable');
+      this.emitEvent('lifecycle', 'info', 'CDP page and network domains enabled.');
+
       await page.goto(parsedUrl.toString());
 
       this.browser = browser;
@@ -117,6 +140,7 @@ export class BrowserSessionManager {
         cdpAttached: true,
         lastError: null,
       };
+      this.emitEvent('browser', 'info', `Navigation completed for ${page.url()}.`);
 
       return { state: this.getState() };
     } catch (error) {
@@ -130,6 +154,7 @@ export class BrowserSessionManager {
         cdpAttached: this.cdpSession !== null,
         lastError: message,
       };
+      this.emitEvent('lifecycle', 'error', 'Managed browser session launch failed.', message);
       await this.disposeConnection();
       throw new Error(message);
     }
@@ -147,9 +172,11 @@ export class BrowserSessionManager {
       cdpAttached: this.cdpSession !== null,
       lastError: null,
     };
+    this.emitEvent('lifecycle', 'info', 'Stopping managed browser session.');
 
     await this.disposeConnection();
     this.state = { ...DEFAULT_STATE };
+    this.emitEvent('lifecycle', 'info', 'Managed browser session stopped.');
     return { state: this.getState() };
   }
 
@@ -202,8 +229,69 @@ export class BrowserSessionManager {
       }`,
     );
   }
+
+  private handleCdpEvent(method: string, params?: Record<string, unknown>): void {
+    if (method === 'Network.requestWillBeSent') {
+      const request = asRecord(params?.request);
+      const requestMethod = typeof request?.method === 'string' ? request.method : 'UNKNOWN';
+      const requestUrl = typeof request?.url === 'string' ? request.url : 'unknown URL';
+      this.emitEvent('network', 'info', `${requestMethod} ${requestUrl}`);
+      return;
+    }
+
+    if (method === 'Network.responseReceived') {
+      const response = asRecord(params?.response);
+      const status = typeof response?.status === 'number' ? response.status : 'unknown';
+      const responseUrl = typeof response?.url === 'string' ? response.url : 'unknown URL';
+      this.emitEvent('network', 'info', `Response ${status} from ${responseUrl}`);
+      return;
+    }
+
+    if (method === 'Network.loadingFailed') {
+      const failedUrl = typeof params?.blockedReason === 'string' ? params.blockedReason : 'request';
+      const errorText = typeof params?.errorText === 'string' ? params.errorText : 'unknown failure';
+      this.emitEvent('network', 'error', `Network loading failed for ${failedUrl}.`, errorText);
+      return;
+    }
+
+    if (method === 'Page.frameNavigated') {
+      const frame = asRecord(params?.frame);
+      const frameUrl = typeof frame?.url === 'string' ? frame.url : null;
+      if (frameUrl !== null) {
+        this.emitEvent('browser', 'info', `Frame navigated to ${frameUrl}.`);
+      }
+    }
+  }
+
+  private emitEvent(
+    category: BrowserRuntimeEventCategory,
+    level: BrowserRuntimeEventLevel,
+    message: string,
+    detail?: string,
+  ): void {
+    const event: BrowserRuntimeEvent = {
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      category,
+      level,
+      message,
+      ...(detail ? { detail } : {}),
+    };
+
+    for (const listener of this.listeners) {
+      listener(event);
+    }
+  }
 }
 
 const defaultConnector: PlaywrightConnector = {
   connect: async (endpointUrl) => chromium.connectOverCDP(endpointUrl) as unknown as ConnectedBrowser,
 };
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value === 'object' && value !== null) {
+    return value as Record<string, unknown>;
+  }
+
+  return null;
+}

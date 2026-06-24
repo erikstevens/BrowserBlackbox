@@ -17,6 +17,9 @@ function createConnectorStub() {
   let disconnected = false;
   let detached = false;
   let pageUrl = 'about:blank';
+  let cdpEventListener:
+    | ((data: { method: string; params?: Record<string, unknown> }) => void)
+    | null = null;
 
   const page = {
     context: () => context,
@@ -30,6 +33,9 @@ function createConnectorStub() {
   const cdpSession = {
     detach: async () => {
       detached = true;
+    },
+    on: (_event: 'event', listener: (data: { method: string; params?: Record<string, unknown> }) => void) => {
+      cdpEventListener = listener;
     },
     send: async (method: string) => {
       sentCommands.push(method);
@@ -56,6 +62,9 @@ function createConnectorStub() {
     state: {
       detached: () => detached,
       disconnected: () => disconnected,
+      emitCdpEvent: (method: string, params?: Record<string, unknown>) => {
+        cdpEventListener?.({ method, params });
+      },
       navigatedUrls: () => [...navigatedUrls],
       sentCommands: () => [...sentCommands],
     },
@@ -115,5 +124,31 @@ describe('BrowserSessionManager', () => {
     });
     expect(connectorStub.state.detached()).toBe(true);
     expect(connectorStub.state.disconnected()).toBe(true);
+  });
+
+  it('emits lifecycle and network events for observers', async () => {
+    const connectorStub = createConnectorStub();
+    const manager = new BrowserSessionManager(connectorStub.connector);
+    const observedMessages: string[] = [];
+    manager.registerSurface(createSurfaceStub());
+    manager.subscribe((event) => {
+      observedMessages.push(event.message);
+    });
+
+    await manager.launch({ targetUrl: 'https://example.com/' });
+    connectorStub.state.emitCdpEvent('Network.requestWillBeSent', {
+      request: {
+        method: 'GET',
+        url: 'https://example.com/api/health',
+      },
+    });
+
+    expect(observedMessages).toContain(
+      'Launching managed browser session for https://example.com/.',
+    );
+    expect(observedMessages).toContain(
+      'Playwright attached to the embedded Chromium target.',
+    );
+    expect(observedMessages).toContain('GET https://example.com/api/health');
   });
 });

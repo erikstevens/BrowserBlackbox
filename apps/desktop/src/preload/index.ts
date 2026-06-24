@@ -4,8 +4,36 @@ import type { DesktopShellApi } from './types';
 const desktopShellApi: DesktopShellApi = {
   version: '0.1.0',
   getBrowserRuntimeState: () => ipcRenderer.invoke('browser-runtime:get-state'),
+  getBrowserRuntimeDiagnostics: () => ipcRenderer.invoke('browser-runtime:get-diagnostics'),
   launchBrowserSession: (request) => ipcRenderer.invoke('browser-runtime:launch', request),
   stopBrowserSession: () => ipcRenderer.invoke('browser-runtime:stop'),
+  onBrowserRuntimeEvent: (listener) => {
+    const handleRuntimeEvent = (_event: Electron.IpcRendererEvent, update: Parameters<typeof listener>[0]) => {
+      listener(update);
+    };
+    const handleDiagnosticsSync = (
+      _event: Electron.IpcRendererEvent,
+      diagnostics: Awaited<ReturnType<DesktopShellApi['getBrowserRuntimeDiagnostics']>>,
+    ) => {
+      for (const event of [...diagnostics.recentEvents].reverse()) {
+        listener({
+          state: diagnostics.state,
+          health: diagnostics.health,
+          event,
+        });
+      }
+    };
+
+    ipcRenderer.on('browser-runtime:event', handleRuntimeEvent);
+    ipcRenderer.on('browser-runtime:diagnostics-sync', handleDiagnosticsSync);
+    ipcRenderer.send('browser-runtime:subscribe');
+
+    return () => {
+      ipcRenderer.removeListener('browser-runtime:event', handleRuntimeEvent);
+      ipcRenderer.removeListener('browser-runtime:diagnostics-sync', handleDiagnosticsSync);
+      ipcRenderer.send('browser-runtime:unsubscribe');
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld('desktopShell', desktopShellApi);
