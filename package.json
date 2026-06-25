@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "dev": "npm run dev -w @browser-blackbox/desktop",
-    "build": "npm run build -w @browser-blackbox/desktop",
+    "build": "cd apps/desktop && electron-vite build",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
