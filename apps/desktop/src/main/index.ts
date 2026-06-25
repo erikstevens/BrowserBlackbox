@@ -17,9 +17,9 @@ const isDev = !app.isPackaged;
 const browserSessionManager = new BrowserSessionManager();
 const REMOTE_DEBUGGING_HOST = '127.0.0.1';
 const REMOTE_DEBUGGING_PORT = 9333;
-const SIDEBAR_WIDTH = 460;
-const WINDOW_PADDING = 20;
-const WINDOW_TOP_OFFSET = 110;
+const APP_FRAME_PADDING = 24;
+const LEFT_RAIL_WIDTH = 384;
+const LAYOUT_GAP = 24;
 const EMBEDDED_PANE_TITLE = 'Browser Blackbox Embedded Surface';
 const MAX_RUNTIME_EVENTS = 80;
 
@@ -139,10 +139,13 @@ function updateWorkspaceBrowserViewBounds(): void {
   }
 
   const [windowWidth, windowHeight] = mainWindow.getContentSize();
-  const x = SIDEBAR_WIDTH;
-  const y = WINDOW_TOP_OFFSET;
-  const width = Math.max(360, windowWidth - SIDEBAR_WIDTH - WINDOW_PADDING);
-  const height = Math.max(320, windowHeight - WINDOW_TOP_OFFSET - WINDOW_PADDING);
+  const x = APP_FRAME_PADDING + LEFT_RAIL_WIDTH + LAYOUT_GAP;
+  const y = APP_FRAME_PADDING;
+  const width = Math.max(
+    420,
+    windowWidth - LEFT_RAIL_WIDTH - LAYOUT_GAP - APP_FRAME_PADDING * 2,
+  );
+  const height = Math.max(420, windowHeight - APP_FRAME_PADDING * 2);
 
   workspaceBrowserView.setBounds({ x, y, width, height });
   workspaceBrowserView.setAutoResize({ width: true, height: true });

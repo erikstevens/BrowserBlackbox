@@ -77,25 +77,26 @@ export function App() {
   return (
     <main className="app-shell">
       <div className="app-frame">
-        <header className="hero-panel">
-          <p className="eyebrow">Phase 3 runtime core</p>
-          <div className="hero-grid">
-            <div className="hero-copy">
-              <h1 className="hero-title">QA Browser Shell</h1>
-              <p className="hero-summary">{productSummary}</p>
+        <section className="sidebar-stack">
+          <header className="hero-panel">
+            <p className="eyebrow">Phase 3 runtime core</p>
+            <div className="hero-grid">
+              <div className="hero-copy">
+                <h1 className="hero-title">QA Browser Shell</h1>
+                <p className="hero-summary">{productSummary}</p>
+              </div>
+              <section className="hero-card">
+                <p className="section-label">Workspace baseline</p>
+                <p className="hero-card-copy">
+                  The renderer now talks to a managed main-process browser runtime
+                  through a strict preload API, and this slice adds a live runtime
+                  event stream plus visible health reporting on top of the embedded
+                  Playwright-plus-CDP surface.
+                </p>
+              </section>
             </div>
-            <section className="hero-card">
-              <p className="section-label">Workspace baseline</p>
-              <p className="hero-card-copy">
-                The renderer now talks to a managed main-process browser runtime through a
-                strict preload API, and this slice adds a live runtime event stream plus
-                visible health reporting on top of the embedded Playwright-plus-CDP surface.
-              </p>
-            </section>
-          </div>
-        </header>
+          </header>
 
-        <section className="content-grid">
           <article className="panel control-panel">
             <p className="section-label">Target launch</p>
             <label className="field-label" htmlFor="target-url">
@@ -174,7 +175,9 @@ export function App() {
               <p className="status-row">
                 <span className="status-label">Last event</span>
                 <span className="status-value">
-                  {runtimeHealth.lastEventAt ? formatTimestamp(runtimeHealth.lastEventAt) : 'No events yet'}
+                  {runtimeHealth.lastEventAt
+                    ? formatTimestamp(runtimeHealth.lastEventAt)
+                    : 'No events yet'}
                 </span>
               </p>
               {browserRuntime.lastError ? (
@@ -188,53 +191,34 @@ export function App() {
 
           <article className="panel browser-pane-panel">
             <p className="section-label">Embedded browser pane</p>
-            <div className="embedded-pane-placeholder">
-              <div className="embedded-pane-header">
-                <span className="embedded-pane-dot" />
-                <span className="embedded-pane-dot" />
-                <span className="embedded-pane-dot" />
-              </div>
-              <div className="embedded-pane-copy">
-                <h2 className="embedded-pane-title">Main-process browser surface</h2>
-                <p className="embedded-pane-text">
-                  The right side of the workspace is the managed browser runtime target.
-                  Launching a session now attaches Playwright over CDP to that same embedded
-                  Chromium surface instead of steering a separate browser session.
-                </p>
-                <ul className="lane-list">
-                  <li className="lane-item">
-                    The embedded pane is hosted by Electron in the main process, not by React.
-                  </li>
-                  <li className="lane-item">
-                    Runtime session ownership stays unified to the embedded browser surface,
-                    so the workspace and runtime do not drift into different browser targets.
-                  </li>
-                  <li className="lane-item">
-                    The runtime now publishes lifecycle, browser, console, and network events
-                    into the renderer without exposing unsafe direct browser access.
-                  </li>
-                </ul>
-              </div>
+            <div className="browser-pane-note">
+              <p className="embedded-pane-text">
+                The browser stage is reserved on the right side of the workspace.
+                Launching a session attaches Playwright over CDP to that embedded
+                Chromium surface without covering the left-hand controls.
+              </p>
             </div>
           </article>
-        </section>
 
-        <section className="content-grid">
           <article className="panel full-width-panel">
             <p className="section-label">Runtime event stream</p>
             <div className="event-stream">
               {runtimeEvents.length === 0 ? (
                 <p className="empty-state">
-                  No runtime events captured yet. Launch a session to inspect lifecycle,
-                  browser, console, and network activity.
+                  No runtime events captured yet. Launch a session to inspect
+                  lifecycle, browser, console, and network activity.
                 </p>
               ) : (
                 runtimeEvents.map((event) => (
                   <div className="event-row" key={event.id}>
                     <div className="event-meta">
-                      <span className={`event-badge event-${event.level}`}>{event.level}</span>
+                      <span className={`event-badge event-${event.level}`}>
+                        {event.level}
+                      </span>
                       <span className="event-category">{event.category}</span>
-                      <span className="event-time">{formatTimestamp(event.timestamp)}</span>
+                      <span className="event-time">
+                        {formatTimestamp(event.timestamp)}
+                      </span>
                     </div>
                     <p className="event-message">{event.message}</p>
                     {event.detail ? <p className="event-detail">{event.detail}</p> : null}
@@ -243,29 +227,47 @@ export function App() {
               )}
             </div>
           </article>
-        </section>
 
-        <section className="content-grid">
           <article className="panel full-width-panel">
             <p className="section-label">Architecture lanes</p>
             <ul className="lane-list">
               <li className="lane-item">
-                `apps/desktop` owns the Electron shell, renderer, and process boundary.
+                `apps/desktop` owns the Electron shell, renderer, and process
+                boundary.
               </li>
               <li className="lane-item">
-                `packages/domain` holds product language and invariant-friendly shared
-                contracts.
+                `packages/domain` holds product language and invariant-friendly
+                shared contracts.
               </li>
               <li className="lane-item">
-                `packages/runtime-browser` now owns the Playwright-over-CDP session lifecycle
-                and emits the runtime event feed consumed in the Electron main process.
+                `packages/runtime-browser` now owns the Playwright-over-CDP session
+                lifecycle and emits the runtime event feed consumed in the Electron
+                main process.
               </li>
               <li className="lane-item">
-                `packages/ui-state` is the initial renderer state surface using Zustand.
+                `packages/ui-state` is the initial renderer state surface using
+                Zustand.
               </li>
             </ul>
           </article>
         </section>
+
+        <aside className="browser-stage" aria-hidden="true">
+          <div className="browser-stage-shell">
+            <div className="browser-stage-header">
+              <span className="embedded-pane-dot" />
+              <span className="embedded-pane-dot" />
+              <span className="embedded-pane-dot" />
+            </div>
+            <div className="browser-stage-copy">
+              <p className="section-label">Reserved browser stage</p>
+              <p className="embedded-pane-text">
+                The live BrowserView is mounted into this column by the Electron main
+                process and stays aligned with the shell as the window resizes.
+              </p>
+            </div>
+          </div>
+        </aside>
       </div>
     </main>
   );

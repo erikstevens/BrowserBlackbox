@@ -23,6 +23,7 @@
 
   body {
     @apply m-0 min-h-screen min-w-[320px];
+    overflow: hidden;
     background:
       radial-gradient(circle at top, rgba(231, 111, 81, 0.08), transparent 30%),
       linear-gradient(180deg, #101922 0%, #0b131b 100%);
@@ -40,16 +41,20 @@
 
 @layer components {
   .app-shell {
-    @apply min-h-screen text-shell-text;
+    @apply h-screen text-shell-text;
   }
 
   .app-frame {
-    @apply mx-auto flex min-h-screen max-w-[84rem] flex-col gap-6 px-6 py-8;
+    @apply grid h-screen w-full grid-cols-[24rem_minmax(0,1fr)] gap-6 overflow-hidden px-6 py-6;
   }
 
   .hero-panel,
   .panel {
     @apply rounded-shell border border-shell-border bg-shell-panel;
+  }
+
+  .sidebar-stack {
+    @apply grid min-h-0 content-start gap-6 overflow-y-auto pr-2;
   }
 
   .hero-panel {
@@ -67,11 +72,6 @@
 
   .eyebrow {
     @apply tracking-[0.3em];
-  }
-
-  .hero-grid,
-  .content-grid {
-    @apply grid gap-6;
   }
 
   .hero-copy {
@@ -101,8 +101,13 @@
 
   .control-panel,
   .browser-pane-panel,
-  .full-width-panel {
+  .full-width-panel,
+  .browser-stage {
     @apply min-w-0;
+  }
+
+  .browser-pane-note {
+    @apply mt-5 rounded-2xl border border-shell-border bg-black/10 p-5;
   }
 
   .field-label {
@@ -225,6 +230,26 @@
     @apply m-0 leading-[1.7] text-shell-muted;
   }
 
+  .browser-stage {
+    @apply relative min-h-0;
+  }
+
+  .browser-stage-shell {
+    @apply h-full overflow-hidden rounded-[2rem] border border-shell-border bg-shell-panel/60;
+    background:
+      radial-gradient(circle at top left, rgba(231, 111, 81, 0.1), transparent 28%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0)),
+      rgba(23, 33, 43, 0.55);
+  }
+
+  .browser-stage-header {
+    @apply flex items-center gap-[0.45rem] border-b border-shell-border bg-white/[0.02] px-4 py-3.5;
+  }
+
+  .browser-stage-copy {
+    @apply grid content-start gap-4 p-5;
+  }
+
   .event-stream {
     @apply mt-5 grid gap-3;
   }
@@ -272,18 +297,9 @@
 }
 
 @layer utilities {
-  @media (min-width: 960px) {
-    .hero-grid {
-      grid-template-columns: 1.3fr 0.7fr;
-      align-items: end;
-    }
-
-    .content-grid {
-      grid-template-columns: 0.95fr 1.05fr;
-    }
-
-    .full-width-panel {
-      grid-column: 1 / -1;
+  @media (max-width: 1180px) {
+    .app-frame {
+      grid-template-columns: 22rem minmax(0, 1fr);
     }
   }
 }

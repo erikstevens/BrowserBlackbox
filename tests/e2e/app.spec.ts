@@ -34,7 +34,8 @@ test.describe('desktop acceptance', () => {
       executablePath: ELECTRON_EXECUTABLE_PATH,
     });
     window = await waitForShellWindow(electronApp);
-    await expect(window.getByRole('heading', { name: 'QA Browser Shell' })).toBeVisible();
+    await window.waitForLoadState('domcontentloaded');
+    await expect(window.locator('#target-url')).toBeVisible();
   });
 
   test.afterEach(async () => {
