@@ -208,6 +208,35 @@ describe('workspace recording review state', () => {
     ]);
   });
 
+  it('marks replayed evidence current again after replay completes', () => {
+    const state = useWorkspaceStore.getState();
+
+    state.replaceRecordedStepInReview('step-fill-email', {
+      ...useWorkspaceStore.getState().recordingSession.present.steps[1]!,
+      title: 'Fill primary email',
+      updatedAt: '2026-06-25T12:12:00.000Z',
+    });
+    useWorkspaceStore.getState().selectRecordedStep('step-assert-dashboard');
+    useWorkspaceStore.getState().previewReplayToSelectedStep();
+    useWorkspaceStore.getState().prepareReplayExecution();
+    useWorkspaceStore.getState().completeReplayExecution([
+      'step-open-login',
+      'step-fill-email',
+      'step-submit-login',
+      'step-assert-dashboard',
+    ]);
+
+    const session = useWorkspaceStore.getState().recordingSession;
+    expect(session.present.steps.map((step) => step.evidenceState)).toEqual([
+      'current',
+      'current',
+      'current',
+      'current',
+    ]);
+    expect(session.present.checkpoints[0]?.status).toBe('valid');
+    expect(useWorkspaceStore.getState().replayPlan).toBeNull();
+  });
+
   it('reuses a valid checkpoint when replaying to a later selected step', () => {
     const state = useWorkspaceStore.getState();
     state.selectRecordedStep('step-assert-dashboard');

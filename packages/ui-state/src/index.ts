@@ -3,6 +3,7 @@ import {
   checkpointFixture,
   domainVersions,
   recordedStepFixture,
+  transitionEvidenceState,
   type AssertionStep,
   type Checkpoint,
   type RecordedStep,
@@ -73,6 +74,7 @@ type WorkspaceState = {
   previewReplayToSelectedStep: (mode?: 'up-to-step' | 'pause-on-step') => void;
   previewReplayFromCheckpoint: (checkpointId: string) => void;
   prepareReplayExecution: () => void;
+  completeReplayExecution: (completedStepIds: string[]) => void;
 };
 
 export function createInitialWorkspaceState(): WorkspaceState {
@@ -285,6 +287,50 @@ export function createInitialWorkspaceState(): WorkspaceState {
             state.recordingSession,
             state.replayPlan,
           ),
+        };
+      }),
+    completeReplayExecution: (completedStepIds) =>
+      useWorkspaceStore.setState((state) => {
+        if (!state.replayPlan) {
+          return state;
+        }
+
+        const currentStepIds = new Set(completedStepIds);
+        return {
+          replayPlan: null,
+          recordingSession: {
+            ...state.recordingSession,
+            present: {
+              steps: state.recordingSession.present.steps.map((step) => {
+                if (!currentStepIds.has(step.id)) {
+                  return step;
+                }
+
+                return {
+                  ...step,
+                  evidenceState:
+                    step.evidenceState === 'current'
+                      ? 'current'
+                      : transitionEvidenceState(step.evidenceState, 'current'),
+                };
+              }),
+              checkpoints: state.recordingSession.present.checkpoints.map((checkpoint) => {
+                const recovered =
+                  currentStepIds.has(checkpoint.stepId) &&
+                  checkpoint.dependencyStepIds.every((stepId) => currentStepIds.has(stepId));
+
+                if (!recovered) {
+                  return checkpoint;
+                }
+
+                return {
+                  ...checkpoint,
+                  status: 'valid',
+                  invalidationReasons: [],
+                };
+              }),
+            },
+          },
         };
       }),
   };

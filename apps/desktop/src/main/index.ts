@@ -12,6 +12,8 @@ import type {
   BrowserRuntimeHealth,
   BrowserRuntimeUpdate,
   BrowserLaunchRequest,
+  BrowserReplayRequest,
+  BrowserReplayCommandResult,
   BrowserRuntimeCommandResult,
   ManagedBrowserSurface,
   BrowserRuntimeState,
@@ -95,6 +97,13 @@ function registerIpcHandlers(): void {
     async (_event, request: BrowserLaunchRequest): Promise<BrowserRuntimeCommandResult> => {
       lastCapturedRuntimeEventId = null;
       return browserSessionManager.launch(request);
+    },
+  );
+
+  ipcMain.handle(
+    'browser-runtime:replay',
+    async (_event, request: BrowserReplayRequest): Promise<BrowserReplayCommandResult> => {
+      return browserSessionManager.executeReplay(request);
     },
   );
 
@@ -610,7 +619,7 @@ function buildEmbeddedCaptureScript(): string {
         if (role && name) return 'page.getByRole("' + escapeDouble(role) + '", { name: "' + escapeDouble(name) + '" })';
         if (element.id) return 'page.locator("#' + escapeDouble(String(element.id)) + '")';
         if ('name' in element && typeof element.name === 'string' && element.name) {
-          return "page.locator('" + element.tagName.toLowerCase() + '[name=\\"" + escapeSingle(element.name) + "\\"]')";
+          return 'page.locator("' + element.tagName.toLowerCase() + '[name=\\\"' + escapeDouble(element.name) + '\\\"]")';
         }
         return '';
       };

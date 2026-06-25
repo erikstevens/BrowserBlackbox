@@ -2,6 +2,8 @@ import type { StoredRunSnapshot } from '@browser-blackbox/persistence/src/contra
 import type {
   BrowserRuntimeDiagnostics,
   BrowserLaunchRequest,
+  BrowserReplayCommandResult,
+  BrowserReplayRequest,
   BrowserRuntimeCommandResult,
   BrowserRuntimeState,
   BrowserRuntimeUpdate,
@@ -14,6 +16,7 @@ export type DesktopShellApi = {
   launchBrowserSession: (
     request: BrowserLaunchRequest,
   ) => Promise<BrowserRuntimeCommandResult>;
+  runReplay: (request: BrowserReplayRequest) => Promise<BrowserReplayCommandResult>;
   stopBrowserSession: () => Promise<BrowserRuntimeCommandResult>;
   loadWorkingCopySnapshot: () => Promise<StoredRunSnapshot | null>;
   saveWorkingCopySnapshot: (snapshot: StoredRunSnapshot) => Promise<void>;

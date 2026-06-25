@@ -93,6 +93,26 @@ test.describe('desktop acceptance', () => {
       })
       .toContain('data:text/html');
   });
+
+  test('runs replay from the review lane against the live managed session', async () => {
+    await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
+    await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
+
+    await expect(window.locator('.status-running')).toContainText('running');
+    await expect(window.getByTestId('recorded-step-list')).toContainText(
+      `Navigate to ${fixtureServer.origin}/`,
+    );
+
+    await window.getByRole('button', { name: 'Replay from start' }).click();
+    await window.getByRole('button', { name: 'Run replay' }).click();
+
+    await expect(window.locator('.event-stream')).toContainText(
+      'Replay started in from-start mode.',
+    );
+    await expect(window.locator('.event-stream')).toContainText(
+      'Replay completed 1 step(s).',
+    );
+  });
 });
 
 async function createFixtureServer(): Promise<FixtureServer> {

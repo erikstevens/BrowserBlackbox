@@ -1,3 +1,5 @@
+import type { RecordedStep } from '@browser-blackbox/domain';
+
 export type BrowserRuntimePhase =
   | 'idle'
   | 'launching'
@@ -21,6 +23,31 @@ export type BrowserRuntimeState = {
 
 export type BrowserRuntimeCommandResult = {
   state: BrowserRuntimeState;
+};
+
+export type BrowserReplayMode =
+  | 'from-start'
+  | 'up-to-step'
+  | 'from-checkpoint'
+  | 'pause-on-step';
+
+export type BrowserReplayPlan = {
+  mode: BrowserReplayMode;
+  targetStepId: string | null;
+  checkpointId: string | null;
+  startStrategy: 'start' | 'checkpoint';
+  executionStepIds: string[];
+};
+
+export type BrowserReplayRequest = {
+  targetUrl?: string | null;
+  steps: RecordedStep[];
+  plan: BrowserReplayPlan;
+};
+
+export type BrowserReplayCommandResult = BrowserRuntimeCommandResult & {
+  completedStepIds: string[];
+  pausedAtStepId: string | null;
 };
 
 export type BrowserRuntimeEventCategory =

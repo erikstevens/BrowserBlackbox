@@ -46,7 +46,12 @@ export function App() {
     (state) => state.previewReplayFromCheckpoint,
   );
   const prepareReplayExecution = useWorkspaceStore((state) => state.prepareReplayExecution);
-  const [pendingAction, setPendingAction] = useState<'launch' | 'stop' | null>(null);
+  const completeReplayExecution = useWorkspaceStore(
+    (state) => state.completeReplayExecution,
+  );
+  const [pendingAction, setPendingAction] = useState<
+    'launch' | 'stop' | 'replay' | null
+  >(null);
   const [persistenceReady, setPersistenceReady] = useState(false);
   const selectedRecordedStep = getSelectedRecordedStep(recordingSession);
   const { canUndo, canRedo } = getRecordingUndoAvailability(recordingSession);
@@ -100,15 +105,15 @@ export function App() {
 
   async function launchManagedChromium(): Promise<void> {
     setPendingAction('launch');
+    beginRuntimeCapture(url, null);
 
     try {
       const result = await window.desktopShell.launchBrowserSession({ targetUrl: url });
-      beginRuntimeCapture(result.state.targetUrl ?? url, result.state.sessionId);
       setBrowserRuntime(result.state);
     } catch (error) {
       setBrowserRuntime({
         ...browserRuntime,
-        phase: 'error',
+        phase: browserRuntime.phase,
         playwrightAttached: browserRuntime.playwrightAttached,
         cdpAttached: browserRuntime.cdpAttached,
         lastError: error instanceof Error ? error.message : String(error),
@@ -127,7 +132,36 @@ export function App() {
     } catch (error) {
       setBrowserRuntime({
         ...browserRuntime,
-        phase: 'error',
+        phase: browserRuntime.phase,
+        playwrightAttached: browserRuntime.playwrightAttached,
+        cdpAttached: browserRuntime.cdpAttached,
+        lastError: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function runReplay(): Promise<void> {
+    if (!replayPlan) {
+      return;
+    }
+
+    setPendingAction('replay');
+    prepareReplayExecution();
+
+    try {
+      const result = await window.desktopShell.runReplay({
+        targetUrl: browserRuntime.targetUrl ?? url,
+        steps: useWorkspaceStore.getState().recordingSession.present.steps,
+        plan: replayPlan,
+      });
+      setBrowserRuntime(result.state);
+      completeReplayExecution(result.completedStepIds);
+    } catch (error) {
+      setBrowserRuntime({
+        ...browserRuntime,
+        phase: browserRuntime.phase,
         playwrightAttached: browserRuntime.playwrightAttached,
         cdpAttached: browserRuntime.cdpAttached,
         lastError: error instanceof Error ? error.message : String(error),
@@ -457,10 +491,14 @@ export function App() {
                 </button>
                 <button
                   className="button button-primary"
-                  disabled={!replayPlan}
-                  onClick={() => prepareReplayExecution()}
+                  disabled={
+                    !replayPlan ||
+                    pendingAction !== null ||
+                    browserRuntime.phase !== 'running'
+                  }
+                  onClick={() => void runReplay()}
                 >
-                  Mark pending replay
+                  Run replay
                 </button>
               </div>
             </div>

@@ -6,6 +6,7 @@ const desktopShellApi: DesktopShellApi = {
   getBrowserRuntimeState: () => ipcRenderer.invoke('browser-runtime:get-state'),
   getBrowserRuntimeDiagnostics: () => ipcRenderer.invoke('browser-runtime:get-diagnostics'),
   launchBrowserSession: (request) => ipcRenderer.invoke('browser-runtime:launch', request),
+  runReplay: (request) => ipcRenderer.invoke('browser-runtime:replay', request),
   stopBrowserSession: () => ipcRenderer.invoke('browser-runtime:stop'),
   loadWorkingCopySnapshot: () => ipcRenderer.invoke('workspace:load-working-copy'),
   saveWorkingCopySnapshot: (snapshot) =>

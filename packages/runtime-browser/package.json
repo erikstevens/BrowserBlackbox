@@ -5,6 +5,7 @@
   "type": "module",
   "main": "./src/index.ts",
   "dependencies": {
+    "@browser-blackbox/domain": "0.1.0",
     "playwright": "^1.54.1"
   }
 }
