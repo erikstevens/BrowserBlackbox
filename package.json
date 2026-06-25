@@ -19,6 +19,7 @@
     "test:e2e": "playwright test"
   },
   "devDependencies": {
+    "@electron/get": "^5.0.0",
     "@playwright/test": "^1.54.1",
     "@types/node": "^24.0.10",
     "@types/react": "^19.1.8",
@@ -28,7 +29,7 @@
     "@typescript-eslint/parser": "^8.35.1",
     "@vitejs/plugin-react": "^4.6.0",
     "autoprefixer": "^10.4.21",
-    "electron": "^37.1.0",
+    "electron": "^37.10.3",
     "electron-builder": "^26.0.12",
     "electron-vite": "^4.0.0",
     "eslint": "^9.30.1",

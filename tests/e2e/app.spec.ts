@@ -33,7 +33,7 @@ test.describe('desktop acceptance', () => {
       cwd: REPO_ROOT,
       executablePath: ELECTRON_EXECUTABLE_PATH,
     });
-    window = await electronApp.firstWindow();
+    window = await waitForShellWindow(electronApp);
     await expect(window.getByRole('heading', { name: 'QA Browser Shell' })).toBeVisible();
   });
 
@@ -51,7 +51,8 @@ test.describe('desktop acceptance', () => {
     await expect(window.locator('.status-running')).toContainText('running');
     await expect(window.locator('.status-health-healthy')).toContainText('healthy');
     await expect(window.getByText('Attached', { exact: true }).first()).toBeVisible();
-    await expect(window.locator('.status-value')).toContainText(`${fixtureServer.origin}/`);
+    await expect(statusRowValue(window, 'Target')).toContainText(`${fixtureServer.origin}/`);
+    await expect(statusRowValue(window, 'Page')).toContainText(`${fixtureServer.origin}/`);
 
     await expect(window.locator('.event-stream')).toContainText(
       `Launching managed browser session for ${fixtureServer.origin}/.`,
@@ -143,4 +144,51 @@ async function createFixtureServer(): Promise<FixtureServer> {
       await once(server, 'close');
     },
   };
+}
+
+async function waitForShellWindow(electronApp: ElectronApplication): Promise<Page> {
+  const deadline = Date.now() + 30_000;
+
+  while (Date.now() < deadline) {
+    for (const page of electronApp.windows()) {
+      if ((await page.title()) === 'QA Browser Shell') {
+        return page;
+      }
+    }
+
+    const remaining = Math.max(0, deadline - Date.now());
+    if (remaining === 0) {
+      break;
+    }
+
+    try {
+      const page = await electronApp.waitForEvent('window', {
+        timeout: Math.min(2_000, remaining),
+        predicate: async (candidate) => {
+          return (await candidate.title()) === 'QA Browser Shell';
+        },
+      });
+      return page;
+    } catch {
+      // Continue polling until the deadline expires.
+    }
+  }
+
+  const discovered = await Promise.all(
+    electronApp.windows().map(async (page) => ({
+      title: await page.title(),
+      url: page.url(),
+    })),
+  );
+
+  throw new Error(
+    `Unable to resolve the QA Browser Shell window. Found: ${JSON.stringify(discovered)}`,
+  );
+}
+
+function statusRowValue(window: Page, label: string) {
+  return window
+    .locator('.status-row')
+    .filter({ has: window.locator('.status-label', { hasText: label }) })
+    .locator('.status-value');
 }

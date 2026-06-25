@@ -2,11 +2,26 @@ import { resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 
+const workspacePackages = [
+  '@browser-blackbox/domain',
+  '@browser-blackbox/runtime-browser',
+  '@browser-blackbox/shared',
+  '@browser-blackbox/ui-state',
+];
+const runtimeExternalPackages = [
+  'playwright',
+  'playwright-core',
+  /^playwright\/.+/,
+  /^playwright-core\/.+/,
+  /^chromium-bidi\/.+/,
+];
+
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin({ exclude: workspacePackages })],
     build: {
       rollupOptions: {
+        external: runtimeExternalPackages,
         input: {
           index: resolve(__dirname, 'src/main/index.ts'),
         },
@@ -14,7 +29,7 @@ export default defineConfig({
     },
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin({ exclude: workspacePackages })],
     build: {
       rollupOptions: {
         input: {
