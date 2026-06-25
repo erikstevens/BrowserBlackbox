@@ -53,5 +53,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         0,
         80,
       ),
-    })),
+  })),
 }));
+
+export * from './recording-session';
