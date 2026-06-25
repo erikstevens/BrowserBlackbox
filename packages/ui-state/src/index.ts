@@ -31,6 +31,13 @@ import {
   undoRecordingSession,
 } from './recording-session';
 import {
+  createReplayFromCheckpointPlan,
+  createReplayFromStartPlan,
+  createReplayToStepPlan,
+  prepareSessionForReplay,
+  type ReplayPlan,
+} from './replay-planning';
+import {
   createStoredRunSnapshotFromWorkspace,
   createWorkspaceWorkingCopyMetadata,
   hydrateWorkspaceFromStoredRunSnapshot,
@@ -46,6 +53,7 @@ type WorkspaceState = {
   runtimeEvents: BrowserRuntimeEvent[];
   recordingSession: RecordingSession;
   workingCopy: WorkspaceWorkingCopyMetadata;
+  replayPlan: ReplayPlan | null;
   setTargetUrl: (targetUrl: string) => void;
   setBrowserRuntime: (browserRuntime: BrowserRuntimeState) => void;
   setRuntimeDiagnostics: (diagnostics: BrowserRuntimeDiagnostics) => void;
@@ -61,6 +69,10 @@ type WorkspaceState = {
   beginRuntimeCapture: (targetUrl: string, sessionId: string | null) => void;
   hydrateWorkingCopySnapshot: (snapshot: StoredRunSnapshot) => void;
   exportWorkingCopySnapshot: () => StoredRunSnapshot;
+  previewReplayFromStart: () => void;
+  previewReplayToSelectedStep: (mode?: 'up-to-step' | 'pause-on-step') => void;
+  previewReplayFromCheckpoint: (checkpointId: string) => void;
+  prepareReplayExecution: () => void;
 };
 
 export function createInitialWorkspaceState(): WorkspaceState {
@@ -89,6 +101,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
     workingCopy: createWorkspaceWorkingCopyMetadata(now, {
       flowId: 'workspace-working-copy',
     }),
+    replayPlan: null,
     setTargetUrl: (targetUrl) => useWorkspaceStore.setState({ targetUrl }),
     setBrowserRuntime: (browserRuntime) => useWorkspaceStore.setState({ browserRuntime }),
     setRuntimeDiagnostics: (diagnostics) =>
@@ -221,6 +234,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
           ...state,
           targetUrl: hydrated.targetUrl,
           workingCopy: hydrated.metadata,
+          replayPlan: null,
           recordingSession: replaceRecordingSession(
             {
               steps: hydrated.steps,
@@ -236,6 +250,42 @@ export function createInitialWorkspaceState(): WorkspaceState {
         browserRuntime: useWorkspaceStore.getState().browserRuntime,
         recordingSession: useWorkspaceStore.getState().recordingSession,
         workingCopy: useWorkspaceStore.getState().workingCopy,
+      }),
+    previewReplayFromStart: () =>
+      useWorkspaceStore.setState((state) => ({
+        replayPlan: createReplayFromStartPlan(state.recordingSession),
+      })),
+    previewReplayToSelectedStep: (mode = 'up-to-step') =>
+      useWorkspaceStore.setState((state) => {
+        const targetStepId =
+          state.recordingSession.selectedStepId ??
+          state.recordingSession.present.steps.at(-1)?.id ??
+          null;
+
+        if (!targetStepId) {
+          return state;
+        }
+
+        return {
+          replayPlan: createReplayToStepPlan(state.recordingSession, targetStepId, mode),
+        };
+      }),
+    previewReplayFromCheckpoint: (checkpointId) =>
+      useWorkspaceStore.setState((state) => ({
+        replayPlan: createReplayFromCheckpointPlan(state.recordingSession, checkpointId),
+      })),
+    prepareReplayExecution: () =>
+      useWorkspaceStore.setState((state) => {
+        if (!state.replayPlan) {
+          return state;
+        }
+
+        return {
+          recordingSession: prepareSessionForReplay(
+            state.recordingSession,
+            state.replayPlan,
+          ),
+        };
       }),
   };
 }
@@ -527,4 +577,5 @@ function asRecord(
 }
 
 export * from './recording-session';
+export * from './replay-planning';
 export * from './workspace-persistence';

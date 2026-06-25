@@ -12,6 +12,7 @@ export function App() {
   const runtimeHealth = useWorkspaceStore((state) => state.runtimeHealth);
   const runtimeEvents = useWorkspaceStore((state) => state.runtimeEvents);
   const recordingSession = useWorkspaceStore((state) => state.recordingSession);
+  const replayPlan = useWorkspaceStore((state) => state.replayPlan);
   const setUrl = useWorkspaceStore((state) => state.setTargetUrl);
   const setBrowserRuntime = useWorkspaceStore((state) => state.setBrowserRuntime);
   const setRuntimeDiagnostics = useWorkspaceStore((state) => state.setRuntimeDiagnostics);
@@ -37,6 +38,14 @@ export function App() {
   const exportWorkingCopySnapshot = useWorkspaceStore(
     (state) => state.exportWorkingCopySnapshot,
   );
+  const previewReplayFromStart = useWorkspaceStore((state) => state.previewReplayFromStart);
+  const previewReplayToSelectedStep = useWorkspaceStore(
+    (state) => state.previewReplayToSelectedStep,
+  );
+  const previewReplayFromCheckpoint = useWorkspaceStore(
+    (state) => state.previewReplayFromCheckpoint,
+  );
+  const prepareReplayExecution = useWorkspaceStore((state) => state.prepareReplayExecution);
   const [pendingAction, setPendingAction] = useState<'launch' | 'stop' | null>(null);
   const [persistenceReady, setPersistenceReady] = useState(false);
   const selectedRecordedStep = getSelectedRecordedStep(recordingSession);
@@ -409,6 +418,136 @@ export function App() {
                   <p className="empty-state">
                     No recorded step is selected. Choose a step from the review list
                     to edit its parameters or insert new steps around it.
+                  </p>
+                )}
+              </div>
+            </div>
+          </article>
+
+          <article className="panel full-width-panel">
+            <div className="panel-header">
+              <div>
+                <p className="section-label">Replay recovery</p>
+                <p className="panel-copy">
+                  Preview the recovery path for the current working copy before
+                  replay. Valid checkpoints can be reused; stale ones are shown but
+                  not trusted.
+                </p>
+              </div>
+              <div className="recording-toolbar">
+                <button
+                  className="button button-secondary"
+                  onClick={() => previewReplayFromStart()}
+                >
+                  Replay from start
+                </button>
+                <button
+                  className="button button-secondary"
+                  disabled={!selectedRecordedStep}
+                  onClick={() => previewReplayToSelectedStep('up-to-step')}
+                >
+                  Replay to step
+                </button>
+                <button
+                  className="button button-secondary"
+                  disabled={!selectedRecordedStep}
+                  onClick={() => previewReplayToSelectedStep('pause-on-step')}
+                >
+                  Pause on step
+                </button>
+                <button
+                  className="button button-primary"
+                  disabled={!replayPlan}
+                  onClick={() => prepareReplayExecution()}
+                >
+                  Mark pending replay
+                </button>
+              </div>
+            </div>
+
+            <div className="recording-review-grid">
+              <div className="step-review-list">
+                <div className="step-editor-shell">
+                  <p className="section-label">Available checkpoints</p>
+                  <div className="checkpoint-list">
+                    {recordingSession.present.checkpoints.length === 0 ? (
+                      <p className="empty-state">
+                        No checkpoints are available yet for this working copy.
+                      </p>
+                    ) : (
+                      recordingSession.present.checkpoints.map((checkpoint) => (
+                        <button
+                          key={checkpoint.id}
+                          type="button"
+                          className={`step-review-card${
+                            replayPlan?.checkpointId === checkpoint.id
+                              ? ' step-review-card-selected'
+                              : ''
+                          }`}
+                          onClick={() => previewReplayFromCheckpoint(checkpoint.id)}
+                        >
+                          <div className="step-review-header">
+                            <span className="step-index">{checkpoint.kind}</span>
+                            <span className={`status-pill status-${checkpoint.status === 'valid' ? 'running' : 'error'}`}>
+                              {checkpoint.status}
+                            </span>
+                          </div>
+                          <p className="step-title">{checkpoint.label}</p>
+                          <p className="step-summary">
+                            Step: {checkpoint.stepId}
+                          </p>
+                          {checkpoint.invalidationReasons.length > 0 ? (
+                            <p className="step-summary">
+                              {checkpoint.invalidationReasons.join(' ')}
+                            </p>
+                          ) : null}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="step-editor-shell">
+                <p className="section-label">Replay plan</p>
+                {replayPlan ? (
+                  <div className="replay-plan-grid">
+                    <p className="status-row">
+                      <span className="status-label">Mode</span>
+                      <span className="status-value">{replayPlan.mode}</span>
+                    </p>
+                    <p className="status-row">
+                      <span className="status-label">Start strategy</span>
+                      <span className="status-value">{replayPlan.startStrategy}</span>
+                    </p>
+                    <p className="status-row">
+                      <span className="status-label">Checkpoint</span>
+                      <span className="status-value">
+                        {replayPlan.checkpointId ?? 'No checkpoint selected'}
+                      </span>
+                    </p>
+                    <p className="status-row">
+                      <span className="status-label">Target step</span>
+                      <span className="status-value">
+                        {replayPlan.targetStepId ?? 'Full flow'}
+                      </span>
+                    </p>
+                    <p className="status-row">
+                      <span className="status-label">Checkpoint status</span>
+                      <span className="status-value">{replayPlan.checkpointStatus}</span>
+                    </p>
+                    <p className="panel-copy">{replayPlan.checkpointReason}</p>
+                    <div className="step-review-tags">
+                      {replayPlan.executionStepIds.map((stepId) => (
+                        <span className="review-tag" key={stepId}>
+                          {stepId}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="empty-state">
+                    Choose a replay mode or checkpoint to preview the recovery path.
                   </p>
                 )}
               </div>

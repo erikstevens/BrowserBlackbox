@@ -182,4 +182,41 @@ describe('workspace recording review state', () => {
     expect(hydrated.recordingSession.present.steps).toHaveLength(1);
     expect(hydrated.recordingSession.present.steps[0]?.title).toBe('Fill Email');
   });
+
+  it('builds a replay plan for the selected step and marks replayed evidence pending', () => {
+    const state = useWorkspaceStore.getState();
+
+    state.replaceRecordedStepInReview('step-fill-email', {
+      ...useWorkspaceStore.getState().recordingSession.present.steps[1]!,
+      title: 'Fill primary email',
+      updatedAt: '2026-06-25T12:12:00.000Z',
+    });
+    useWorkspaceStore.getState().selectRecordedStep('step-assert-dashboard');
+    useWorkspaceStore.getState().previewReplayToSelectedStep();
+
+    const planned = useWorkspaceStore.getState();
+    expect(planned.replayPlan?.startStrategy).toBe('start');
+    expect(planned.replayPlan?.targetStepId).toBe('step-assert-dashboard');
+
+    useWorkspaceStore.getState().prepareReplayExecution();
+
+    expect(useWorkspaceStore.getState().recordingSession.present.steps.map((step) => step.evidenceState)).toEqual([
+      'current',
+      'pending-regeneration',
+      'pending-regeneration',
+      'pending-regeneration',
+    ]);
+  });
+
+  it('reuses a valid checkpoint when replaying to a later selected step', () => {
+    const state = useWorkspaceStore.getState();
+    state.selectRecordedStep('step-assert-dashboard');
+    state.previewReplayToSelectedStep();
+
+    expect(useWorkspaceStore.getState().replayPlan).toMatchObject({
+      startStrategy: 'checkpoint',
+      checkpointId: 'checkpoint-post-login-review',
+      targetStepId: 'step-assert-dashboard',
+    });
+  });
 });

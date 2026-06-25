@@ -218,6 +218,11 @@
     @apply mt-5 grid gap-2 rounded-2xl border border-shell-border bg-black/10 p-4;
   }
 
+  .checkpoint-list,
+  .replay-plan-grid {
+    @apply mt-4 grid gap-3;
+  }
+
   .lane-list {
     @apply mt-5 grid list-none gap-3 p-0;
   }
