@@ -216,6 +216,8 @@ export function App() {
                         {event.level}
                       </span>
                       <span className="event-category">{event.category}</span>
+                      <span className="event-source">{event.source}</span>
+                      <span className="event-code">{event.code}</span>
                       <span className="event-time">
                         {formatTimestamp(event.timestamp)}
                       </span>

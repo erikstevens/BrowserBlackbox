@@ -6,6 +6,7 @@ import type {
   BrowserRuntimeEvent,
   BrowserRuntimeEventCategory,
   BrowserRuntimeEventLevel,
+  BrowserRuntimeEventSource,
   ManagedBrowserSurface,
   BrowserRuntimeState,
 } from './contracts';
@@ -52,6 +53,7 @@ export class BrowserSessionManager {
   private browser: ConnectedBrowser | null = null;
   private cdpSession: ConnectedCdpSession | null = null;
   private listeners = new Set<(event: BrowserRuntimeEvent) => void>();
+  private requestMap = new Map<string, { method: string; url: string }>();
   private surface: ManagedBrowserSurface | null = null;
   private state: BrowserRuntimeState = DEFAULT_STATE;
 
@@ -110,11 +112,27 @@ export class BrowserSessionManager {
       cdpAttached: false,
       lastError: null,
     };
-    this.emitEvent('lifecycle', 'info', `Launching managed browser session for ${parsedUrl.toString()}.`);
+    this.requestMap.clear();
+    this.emitEvent(
+      'lifecycle',
+      'runtime.launch.started',
+      'info',
+      `Launching managed browser session for ${parsedUrl.toString()}.`,
+      'runtime_manager',
+      {
+        targetUrl: parsedUrl.toString(),
+      },
+    );
 
     try {
       const browser = await this.connector.connect(this.surface.getCdpEndpoint());
-      this.emitEvent('lifecycle', 'info', 'Playwright attached to the embedded Chromium target.');
+      this.emitEvent(
+        'lifecycle',
+        'runtime.playwright.attached',
+        'info',
+        'Playwright attached to the embedded Chromium target.',
+        'runtime_manager',
+      );
 
       const page = await this.resolveEmbeddedPage(browser, this.surface.getURL());
       const cdpSession = await page.context().newCDPSession(page);
@@ -124,7 +142,13 @@ export class BrowserSessionManager {
 
       await cdpSession.send('Page.enable');
       await cdpSession.send('Network.enable');
-      this.emitEvent('lifecycle', 'info', 'CDP page and network domains enabled.');
+      this.emitEvent(
+        'lifecycle',
+        'runtime.cdp.enabled',
+        'info',
+        'CDP page and network domains enabled.',
+        'runtime_manager',
+      );
 
       await page.goto(parsedUrl.toString());
 
@@ -140,7 +164,16 @@ export class BrowserSessionManager {
         cdpAttached: true,
         lastError: null,
       };
-      this.emitEvent('browser', 'info', `Navigation completed for ${page.url()}.`);
+      this.emitEvent(
+        'browser',
+        'browser.navigation.completed',
+        'info',
+        `Navigation completed for ${page.url()}.`,
+        'runtime_manager',
+        {
+          url: page.url(),
+        },
+      );
 
       return { state: this.getState() };
     } catch (error) {
@@ -154,7 +187,15 @@ export class BrowserSessionManager {
         cdpAttached: this.cdpSession !== null,
         lastError: message,
       };
-      this.emitEvent('lifecycle', 'error', 'Managed browser session launch failed.', message);
+      this.emitEvent(
+        'lifecycle',
+        'runtime.launch.failed',
+        'error',
+        'Managed browser session launch failed.',
+        'runtime_manager',
+        undefined,
+        message,
+      );
       await this.disposeConnection();
       throw new Error(message);
     }
@@ -172,11 +213,24 @@ export class BrowserSessionManager {
       cdpAttached: this.cdpSession !== null,
       lastError: null,
     };
-    this.emitEvent('lifecycle', 'info', 'Stopping managed browser session.');
+    this.emitEvent(
+      'lifecycle',
+      'runtime.stop.started',
+      'info',
+      'Stopping managed browser session.',
+      'runtime_manager',
+    );
 
     await this.disposeConnection();
     this.state = { ...DEFAULT_STATE };
-    this.emitEvent('lifecycle', 'info', 'Managed browser session stopped.');
+    this.requestMap.clear();
+    this.emitEvent(
+      'lifecycle',
+      'runtime.stop.completed',
+      'info',
+      'Managed browser session stopped.',
+      'runtime_manager',
+    );
     return { state: this.getState() };
   }
 
@@ -233,48 +287,113 @@ export class BrowserSessionManager {
   private handleCdpEvent(method: string, params?: Record<string, unknown>): void {
     if (method === 'Network.requestWillBeSent') {
       const request = asRecord(params?.request);
+      const requestId = typeof params?.requestId === 'string' ? params.requestId : null;
       const requestMethod = typeof request?.method === 'string' ? request.method : 'UNKNOWN';
       const requestUrl = typeof request?.url === 'string' ? request.url : 'unknown URL';
-      this.emitEvent('network', 'info', `${requestMethod} ${requestUrl}`);
+      if (requestId !== null) {
+        this.requestMap.set(requestId, {
+          method: requestMethod,
+          url: requestUrl,
+        });
+      }
+      this.emitEvent(
+        'network',
+        'network.request.started',
+        'info',
+        `${requestMethod} ${requestUrl}`,
+        'cdp',
+        {
+          method: requestMethod,
+          requestId,
+          url: requestUrl,
+        },
+      );
       return;
     }
 
     if (method === 'Network.responseReceived') {
+      const requestId = typeof params?.requestId === 'string' ? params.requestId : null;
       const response = asRecord(params?.response);
+      const requestRecord = requestId !== null ? this.requestMap.get(requestId) : undefined;
       const status = typeof response?.status === 'number' ? response.status : 'unknown';
       const responseUrl = typeof response?.url === 'string' ? response.url : 'unknown URL';
-      this.emitEvent('network', 'info', `Response ${status} from ${responseUrl}`);
+      this.emitEvent(
+        'network',
+        'network.response.received',
+        'info',
+        `Response ${status} from ${responseUrl}`,
+        'cdp',
+        {
+          method: requestRecord?.method ?? null,
+          requestId,
+          status,
+          url: responseUrl,
+        },
+      );
       return;
     }
 
     if (method === 'Network.loadingFailed') {
-      const failedUrl = typeof params?.blockedReason === 'string' ? params.blockedReason : 'request';
+      const requestId = typeof params?.requestId === 'string' ? params.requestId : null;
+      const requestRecord = requestId !== null ? this.requestMap.get(requestId) : undefined;
+      const failedUrl = requestRecord?.url ?? 'request';
       const errorText = typeof params?.errorText === 'string' ? params.errorText : 'unknown failure';
-      this.emitEvent('network', 'error', `Network loading failed for ${failedUrl}.`, errorText);
+      this.emitEvent(
+        'network',
+        'network.request.failed',
+        'error',
+        `Network loading failed for ${failedUrl}.`,
+        'cdp',
+        {
+          errorText,
+          method: requestRecord?.method ?? null,
+          requestId,
+          url: failedUrl,
+        },
+        errorText,
+      );
       return;
     }
 
     if (method === 'Page.frameNavigated') {
       const frame = asRecord(params?.frame);
       const frameUrl = typeof frame?.url === 'string' ? frame.url : null;
+      const parentFrameId = typeof frame?.parentId === 'string' ? frame.parentId : null;
       if (frameUrl !== null) {
-        this.emitEvent('browser', 'info', `Frame navigated to ${frameUrl}.`);
+        this.emitEvent(
+          'browser',
+          'browser.frame.navigated',
+          'info',
+          `Frame navigated to ${frameUrl}.`,
+          'cdp',
+          {
+            isMainFrame: parentFrameId === null,
+            parentFrameId,
+            url: frameUrl,
+          },
+        );
       }
     }
   }
 
   private emitEvent(
     category: BrowserRuntimeEventCategory,
+    code: string,
     level: BrowserRuntimeEventLevel,
     message: string,
+    source: BrowserRuntimeEventSource,
+    data?: Record<string, unknown>,
     detail?: string,
   ): void {
     const event: BrowserRuntimeEvent = {
       id: randomUUID(),
       timestamp: new Date().toISOString(),
       category,
+      code,
       level,
       message,
+      source,
+      ...(data ? { data } : {}),
       ...(detail ? { detail } : {}),
     };
 

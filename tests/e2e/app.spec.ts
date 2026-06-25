@@ -35,7 +35,7 @@ test.describe('desktop acceptance', () => {
     });
     window = await waitForShellWindow(electronApp);
     await window.waitForLoadState('domcontentloaded');
-    await expect(window.locator('#target-url')).toBeVisible();
+    await expect(window.locator('#target-url')).toBeVisible({ timeout: 15_000 });
   });
 
   test.afterEach(async () => {

@@ -32,13 +32,18 @@ export type BrowserRuntimeEventCategory =
 
 export type BrowserRuntimeEventLevel = 'info' | 'warn' | 'error';
 
+export type BrowserRuntimeEventSource = 'runtime_manager' | 'electron_shell' | 'cdp';
+
 export type BrowserRuntimeEvent = {
   id: string;
   timestamp: string;
   category: BrowserRuntimeEventCategory;
+  code: string;
   level: BrowserRuntimeEventLevel;
   message: string;
+  source: BrowserRuntimeEventSource;
   detail?: string;
+  data?: Record<string, unknown>;
 };
 
 export type BrowserRuntimeHealthStatus = 'idle' | 'healthy' | 'degraded' | 'error';

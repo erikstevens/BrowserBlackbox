@@ -1,5 +1,6 @@
 import { app, BrowserView, BrowserWindow, ipcMain } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { BrowserSessionManager } from '@browser-blackbox/runtime-browser';
 import type {
@@ -16,7 +17,6 @@ import type {
 const isDev = !app.isPackaged;
 const browserSessionManager = new BrowserSessionManager();
 const REMOTE_DEBUGGING_HOST = '127.0.0.1';
-const REMOTE_DEBUGGING_PORT = 9333;
 const APP_FRAME_PADDING = 24;
 const LEFT_RAIL_WIDTH = 384;
 const LAYOUT_GAP = 24;
@@ -25,6 +25,7 @@ const MAX_RUNTIME_EVENTS = 80;
 
 let mainWindow: BrowserWindow | null = null;
 let workspaceBrowserView: BrowserView | null = null;
+let remoteDebuggingPort = 0;
 let runtimeEvents: BrowserRuntimeEvent[] = [];
 let runtimeHealth: BrowserRuntimeHealth = {
   status: 'idle',
@@ -35,7 +36,6 @@ let runtimeHealth: BrowserRuntimeHealth = {
 };
 
 app.commandLine.appendSwitch('remote-debugging-address', REMOTE_DEBUGGING_HOST);
-app.commandLine.appendSwitch('remote-debugging-port', String(REMOTE_DEBUGGING_PORT));
 browserSessionManager.subscribe((event) => {
   publishRuntimeEvent(event);
 });
@@ -153,7 +153,7 @@ function updateWorkspaceBrowserViewBounds(): void {
 
 function createEmbeddedSurfaceAdapter(view: BrowserView): ManagedBrowserSurface {
   return {
-    getCdpEndpoint: () => `http://${REMOTE_DEBUGGING_HOST}:${REMOTE_DEBUGGING_PORT}`,
+    getCdpEndpoint: () => `http://${REMOTE_DEBUGGING_HOST}:${remoteDebuggingPort}`,
     getURL: () => view.webContents.getURL(),
   };
 }
@@ -190,9 +190,15 @@ function registerWorkspaceBrowserListeners(view: BrowserView): void {
       id: randomUUID(),
       timestamp: new Date().toISOString(),
       category: 'console',
+      code: 'console.message',
       level: severity,
       message,
+      source: 'electron_shell',
       detail: `${sourceId}:${line}`,
+      data: {
+        line,
+        sourceId,
+      },
     });
   });
 
@@ -205,9 +211,16 @@ function registerWorkspaceBrowserListeners(view: BrowserView): void {
       id: randomUUID(),
       timestamp: new Date().toISOString(),
       category: 'browser',
+      code: 'browser.navigation.started',
       level: 'info',
       message: `Navigation started for ${url}.`,
+      source: 'electron_shell',
       detail: isInPlace ? 'In-place navigation' : 'Full navigation',
+      data: {
+        isInPlace,
+        isMainFrame,
+        url,
+      },
     });
   });
 
@@ -216,8 +229,13 @@ function registerWorkspaceBrowserListeners(view: BrowserView): void {
       id: randomUUID(),
       timestamp: new Date().toISOString(),
       category: 'browser',
+      code: 'browser.navigation.committed',
       level: 'info',
       message: `Navigation committed for ${url}.`,
+      source: 'electron_shell',
+      data: {
+        url,
+      },
     });
   });
 
@@ -232,9 +250,16 @@ function registerWorkspaceBrowserListeners(view: BrowserView): void {
         id: randomUUID(),
         timestamp: new Date().toISOString(),
         category: 'browser',
+        code: 'browser.navigation.failed',
         level: 'error',
         message: `Navigation failed for ${validatedURL}.`,
+        source: 'electron_shell',
         detail: `${errorCode}: ${errorDescription}`,
+        data: {
+          errorCode,
+          errorDescription,
+          validatedURL,
+        },
       });
     },
   );
@@ -244,9 +269,15 @@ function registerWorkspaceBrowserListeners(view: BrowserView): void {
       id: randomUUID(),
       timestamp: new Date().toISOString(),
       category: 'browser',
+      code: 'browser.render_process.exited',
       level: 'error',
       message: 'Embedded browser render process exited unexpectedly.',
+      source: 'electron_shell',
       detail: `${details.reason}${details.exitCode ? ` (${details.exitCode})` : ''}`,
+      data: {
+        exitCode: details.exitCode,
+        reason: details.reason,
+      },
     });
   });
 }
@@ -308,14 +339,18 @@ function deriveRuntimeHealth(
   };
 }
 
-app.whenReady().then(() => {
-  registerIpcHandlers();
-  createWindow();
+bootstrapRemoteDebugging().then((port) => {
+  remoteDebuggingPort = port;
+  app.commandLine.appendSwitch('remote-debugging-port', String(port));
+  app.whenReady().then(() => {
+    registerIpcHandlers();
+    createWindow();
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    });
   });
 });
 
@@ -328,3 +363,50 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   void browserSessionManager.stop();
 });
+
+async function bootstrapRemoteDebugging(): Promise<number> {
+  const port = await allocateFreePort();
+  publishRuntimeEvent({
+    id: randomUUID(),
+    timestamp: new Date().toISOString(),
+    category: 'lifecycle',
+    code: 'runtime.cdp.port_allocated',
+    level: 'info',
+    message: `Allocated local CDP port ${port}.`,
+    source: 'electron_shell',
+    data: {
+      host: REMOTE_DEBUGGING_HOST,
+      port,
+    },
+  });
+  return port;
+}
+
+async function allocateFreePort(): Promise<number> {
+  const server = createServer();
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, REMOTE_DEBUGGING_HOST, () => {
+      resolve();
+    });
+  });
+
+  const address = server.address();
+  if (address === null || typeof address === 'string') {
+    server.close();
+    throw new Error('Unable to allocate a localhost port for the Electron CDP endpoint.');
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+
+  return address.port;
+}

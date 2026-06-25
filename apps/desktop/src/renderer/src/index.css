@@ -279,6 +279,8 @@
   }
 
   .event-category,
+  .event-source,
+  .event-code,
   .event-time {
     @apply text-shell-muted;
   }
