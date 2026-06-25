@@ -1,17 +1,41 @@
 import { useEffect, useState } from 'react';
-import { productSummary } from '@browser-blackbox/domain';
-import { useWorkspaceStore } from '@browser-blackbox/ui-state';
+import { productSummary, type RecordedStep } from '@browser-blackbox/domain';
+import {
+  getRecordingUndoAvailability,
+  getSelectedRecordedStep,
+  useWorkspaceStore,
+} from '@browser-blackbox/ui-state';
 
 export function App() {
   const url = useWorkspaceStore((state) => state.targetUrl);
   const browserRuntime = useWorkspaceStore((state) => state.browserRuntime);
   const runtimeHealth = useWorkspaceStore((state) => state.runtimeHealth);
   const runtimeEvents = useWorkspaceStore((state) => state.runtimeEvents);
+  const recordingSession = useWorkspaceStore((state) => state.recordingSession);
   const setUrl = useWorkspaceStore((state) => state.setTargetUrl);
   const setBrowserRuntime = useWorkspaceStore((state) => state.setBrowserRuntime);
   const setRuntimeDiagnostics = useWorkspaceStore((state) => state.setRuntimeDiagnostics);
   const pushRuntimeUpdate = useWorkspaceStore((state) => state.pushRuntimeUpdate);
+  const selectRecordedStep = useWorkspaceStore((state) => state.selectRecordedStep);
+  const replaceRecordedStepInReview = useWorkspaceStore(
+    (state) => state.replaceRecordedStepInReview,
+  );
+  const insertStepAfterSelection = useWorkspaceStore((state) => state.insertStepAfterSelection);
+  const moveRecordedStep = useWorkspaceStore((state) => state.moveRecordedStep);
+  const disableRecordedStepInReview = useWorkspaceStore(
+    (state) => state.disableRecordedStepInReview,
+  );
+  const removeRecordedStepFromReview = useWorkspaceStore(
+    (state) => state.removeRecordedStepFromReview,
+  );
+  const undoRecordingEdit = useWorkspaceStore((state) => state.undoRecordingEdit);
+  const redoRecordingEdit = useWorkspaceStore((state) => state.redoRecordingEdit);
   const [pendingAction, setPendingAction] = useState<'launch' | 'stop' | null>(null);
+  const selectedRecordedStep = getSelectedRecordedStep(recordingSession);
+  const { canUndo, canRedo } = getRecordingUndoAvailability(recordingSession);
+  const selectedStepIndex = selectedRecordedStep
+    ? recordingSession.present.steps.findIndex((step) => step.id === selectedRecordedStep.id)
+    : -1;
 
   useEffect(() => {
     void window.desktopShell
@@ -79,19 +103,18 @@ export function App() {
       <div className="app-frame">
         <section className="sidebar-stack">
           <header className="hero-panel">
-            <p className="eyebrow">Phase 3 runtime core</p>
+            <p className="eyebrow">Phase 4 recording review</p>
             <div className="hero-grid">
               <div className="hero-copy">
                 <h1 className="hero-title">QA Browser Shell</h1>
                 <p className="hero-summary">{productSummary}</p>
               </div>
               <section className="hero-card">
-                <p className="section-label">Workspace baseline</p>
+                <p className="section-label">Editable review lane</p>
                 <p className="hero-card-copy">
-                  The renderer now talks to a managed main-process browser runtime
-                  through a strict preload API, and this slice adds a live runtime
-                  event stream plus visible health reporting on top of the embedded
-                  Playwright-plus-CDP surface.
+                  The shell now exposes a canonical step-review surface backed by
+                  shared flow-edit state, so small recording mistakes can be fixed as
+                  data before replay instead of forcing a fresh browser capture.
                 </p>
               </section>
             </div>
@@ -189,6 +212,179 @@ export function App() {
             </div>
           </article>
 
+          <article className="panel full-width-panel">
+            <div className="panel-header">
+              <div>
+                <p className="section-label">Recorded flow review</p>
+                <p className="panel-copy">
+                  Edit recorded steps, insert supported actions or assertions, and
+                  review what evidence is now stale before replay regenerates it.
+                </p>
+              </div>
+              <div className="recording-toolbar">
+                <button
+                  className="button button-secondary"
+                  disabled={!canUndo}
+                  onClick={() => undoRecordingEdit()}
+                >
+                  Undo
+                </button>
+                <button
+                  className="button button-secondary"
+                  disabled={!canRedo}
+                  onClick={() => redoRecordingEdit()}
+                >
+                  Redo
+                </button>
+                <button
+                  className="button button-secondary"
+                  onClick={() => insertStepAfterSelection('reload')}
+                >
+                  Insert reload
+                </button>
+                <button
+                  className="button button-secondary"
+                  onClick={() => insertStepAfterSelection('url-assertion')}
+                >
+                  Insert URL assertion
+                </button>
+              </div>
+            </div>
+
+            <div className="recording-review-grid">
+              <div className="step-review-list" data-testid="recorded-step-list">
+                {recordingSession.present.steps.map((step, index) => (
+                  <button
+                    key={step.id}
+                    className={`step-review-card${
+                      step.id === recordingSession.selectedStepId
+                        ? ' step-review-card-selected'
+                        : ''
+                    }`}
+                    onClick={() => selectRecordedStep(step.id)}
+                    type="button"
+                  >
+                    <div className="step-review-header">
+                      <span className="step-index">Step {index + 1}</span>
+                      <span className={`status-pill status-${step.evidenceState}`}>
+                        {step.evidenceState}
+                      </span>
+                    </div>
+                    <p className="step-title">{step.title}</p>
+                    <p className="step-summary">{describeRecordedStep(step)}</p>
+                    <div className="step-review-tags">
+                      <span className="review-tag">{step.kind}</span>
+                      <span className="review-tag">{step.status}</span>
+                      {step.dependencyStepIds.length > 0 ? (
+                        <span className="review-tag">
+                          depends on {step.dependencyStepIds.length}
+                        </span>
+                      ) : null}
+                    </div>
+                  </button>
+                ))}
+              </div>
+
+              <div className="step-editor-shell">
+                {selectedRecordedStep ? (
+                  <>
+                    <div className="step-editor-header">
+                      <div>
+                        <p className="section-label">Selected step</p>
+                        <h2 className="step-editor-title">{selectedRecordedStep.title}</h2>
+                      </div>
+                      <div className="step-editor-actions">
+                        <button
+                          className="button button-secondary"
+                          disabled={selectedStepIndex <= 0}
+                          onClick={() => moveRecordedStep(selectedRecordedStep.id, 'up')}
+                        >
+                          Move up
+                        </button>
+                        <button
+                          className="button button-secondary"
+                          disabled={
+                            selectedStepIndex === -1 ||
+                            selectedStepIndex >=
+                              recordingSession.present.steps.length - 1
+                          }
+                          onClick={() => moveRecordedStep(selectedRecordedStep.id, 'down')}
+                        >
+                          Move down
+                        </button>
+                        <button
+                          className="button button-secondary"
+                          disabled={selectedRecordedStep.status === 'disabled'}
+                          onClick={() => disableRecordedStepInReview(selectedRecordedStep.id)}
+                        >
+                          Disable
+                        </button>
+                        <button
+                          className="button button-danger"
+                          onClick={() => removeRecordedStepFromReview(selectedRecordedStep.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="editor-form-grid">
+                      <label className="field-label" htmlFor="step-title">
+                        Step title
+                      </label>
+                      <input
+                        id="step-title"
+                        className="url-input"
+                        value={selectedRecordedStep.title}
+                        onChange={(event) =>
+                          replaceRecordedStepInReview(selectedRecordedStep.id, {
+                            ...selectedRecordedStep,
+                            title: event.target.value,
+                            updatedAt: new Date().toISOString(),
+                          })
+                        }
+                      />
+
+                      {selectedRecordedStep.kind === 'action' ? (
+                        <ActionEditor
+                          step={selectedRecordedStep}
+                          onChange={(step) =>
+                            replaceRecordedStepInReview(selectedRecordedStep.id, step)
+                          }
+                        />
+                      ) : (
+                        <AssertionEditor
+                          step={selectedRecordedStep}
+                          onChange={(step) =>
+                            replaceRecordedStepInReview(selectedRecordedStep.id, step)
+                          }
+                        />
+                      )}
+                    </div>
+
+                    <div className="step-editor-footer">
+                      <p className="panel-copy">
+                        Last mutation: {recordingSession.lastMutation.kind}. Affected
+                        steps: {recordingSession.lastMutation.affectedStepIds.join(', ') || 'none'}.
+                      </p>
+                      <p className="panel-copy">
+                        Invalidated checkpoints:{' '}
+                        {recordingSession.lastMutation.invalidatedCheckpointIds.join(', ') ||
+                          'none'}
+                        .
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <p className="empty-state">
+                    No recorded step is selected. Choose a step from the review list
+                    to edit its parameters or insert new steps around it.
+                  </p>
+                )}
+              </div>
+            </div>
+          </article>
+
           <article className="panel browser-pane-panel">
             <p className="section-label">Embedded browser pane</p>
             <div className="browser-pane-note">
@@ -242,13 +438,13 @@ export function App() {
                 shared contracts.
               </li>
               <li className="lane-item">
-                `packages/runtime-browser` now owns the Playwright-over-CDP session
+                `packages/runtime-browser` owns the Playwright-over-CDP session
                 lifecycle and emits the runtime event feed consumed in the Electron
                 main process.
               </li>
               <li className="lane-item">
-                `packages/ui-state` is the initial renderer state surface using
-                Zustand.
+                `packages/ui-state` now carries both the runtime shell state and the
+                editable recording review session consumed by the renderer.
               </li>
             </ul>
           </article>
@@ -281,4 +477,269 @@ function formatTimestamp(timestamp: string): string {
     minute: '2-digit',
     second: '2-digit',
   });
+}
+
+function describeRecordedStep(step: RecordedStep): string {
+  if (step.kind === 'assertion') {
+    switch (step.assertion.kind) {
+      case 'element-visible':
+      case 'element-hidden':
+      case 'element-enabled':
+        return `${step.assertion.kind} on ${step.assertion.selector}`;
+      case 'element-contains-text':
+        return `expect ${step.assertion.selector} to contain "${step.assertion.expectedText}"`;
+      case 'url-matches':
+        return `expect URL ${step.assertion.matchMode} ${step.assertion.expectedUrl}`;
+      default:
+        return step.assertion.kind;
+    }
+  }
+
+  switch (step.action.type) {
+    case 'navigate':
+      return step.action.url;
+    case 'fill':
+      return `${step.action.selector} = ${
+        step.action.sensitive ? '[REDACTED]' : step.action.value
+      }`;
+    case 'click':
+    case 'double-click':
+      return `${step.action.type} ${step.action.selector}`;
+    case 'reload':
+      return 'Reload the current page';
+    default:
+      return step.action.type;
+  }
+}
+
+function ActionEditor(props: {
+  step: Extract<RecordedStep, { kind: 'action' }>;
+  onChange: (step: Extract<RecordedStep, { kind: 'action' }>) => void;
+}) {
+  const { step, onChange } = props;
+
+  switch (step.action.type) {
+    case 'navigate': {
+      return (
+        <>
+          <label className="field-label" htmlFor="step-url">
+            Target URL
+          </label>
+          <input
+            id="step-url"
+            className="url-input"
+            value={step.action.url}
+            onChange={(event) =>
+              onChange({
+                ...step,
+                updatedAt: new Date().toISOString(),
+                action: {
+                  type: 'navigate',
+                  url: event.target.value,
+                },
+              })
+            }
+          />
+        </>
+      );
+    }
+    case 'fill': {
+      const action = step.action;
+      return (
+        <>
+          <label className="field-label" htmlFor="step-selector">
+            Selector
+          </label>
+          <input
+            id="step-selector"
+            className="url-input"
+            value={action.selector}
+            onChange={(event) =>
+              onChange({
+                ...step,
+                updatedAt: new Date().toISOString(),
+                action: {
+                  type: 'fill',
+                  selector: event.target.value,
+                  value: action.value,
+                  sensitive: action.sensitive,
+                },
+              })
+            }
+          />
+          <label className="field-label" htmlFor="step-value">
+            Text value
+          </label>
+          <input
+            id="step-value"
+            className="url-input"
+            value={action.value}
+            onChange={(event) =>
+              onChange({
+                ...step,
+                updatedAt: new Date().toISOString(),
+                action: {
+                  type: 'fill',
+                  selector: action.selector,
+                  value: event.target.value,
+                  sensitive: action.sensitive,
+                },
+              })
+            }
+          />
+        </>
+      );
+    }
+    case 'click':
+    case 'double-click': {
+      const action = step.action;
+      return (
+        <>
+          <label className="field-label" htmlFor="step-selector">
+            Selector
+          </label>
+          <input
+            id="step-selector"
+            className="url-input"
+            value={action.selector}
+            onChange={(event) =>
+              onChange({
+                ...step,
+                updatedAt: new Date().toISOString(),
+                action: {
+                  type: action.type,
+                  selector: event.target.value,
+                },
+              })
+            }
+          />
+        </>
+      );
+    }
+    default:
+      return (
+        <p className="empty-state">
+          This action type has no editable parameters in the current Phase 4 slice.
+        </p>
+      );
+  }
+}
+
+function AssertionEditor(props: {
+  step: Extract<RecordedStep, { kind: 'assertion' }>;
+  onChange: (step: Extract<RecordedStep, { kind: 'assertion' }>) => void;
+}) {
+  const { step, onChange } = props;
+
+  switch (step.assertion.kind) {
+    case 'element-visible':
+    case 'element-hidden':
+    case 'element-enabled': {
+      const assertion = step.assertion;
+      return (
+        <>
+          <label className="field-label" htmlFor="assertion-selector">
+            Selector
+          </label>
+          <input
+            id="assertion-selector"
+            className="url-input"
+            value={assertion.selector}
+            onChange={(event) =>
+              onChange({
+                ...step,
+                updatedAt: new Date().toISOString(),
+                assertion: {
+                  schemaVersion: assertion.schemaVersion,
+                  kind: assertion.kind,
+                  selector: event.target.value,
+                },
+              })
+            }
+          />
+        </>
+      );
+    }
+    case 'element-contains-text': {
+      const assertion = step.assertion;
+      return (
+        <>
+          <label className="field-label" htmlFor="assertion-selector">
+            Selector
+          </label>
+          <input
+            id="assertion-selector"
+            className="url-input"
+            value={assertion.selector}
+            onChange={(event) =>
+              onChange({
+                ...step,
+                updatedAt: new Date().toISOString(),
+                assertion: {
+                  schemaVersion: assertion.schemaVersion,
+                  kind: 'element-contains-text',
+                  selector: event.target.value,
+                  expectedText: assertion.expectedText,
+                },
+              })
+            }
+          />
+          <label className="field-label" htmlFor="assertion-text">
+            Expected text
+          </label>
+          <input
+            id="assertion-text"
+            className="url-input"
+            value={assertion.expectedText}
+            onChange={(event) =>
+              onChange({
+                ...step,
+                updatedAt: new Date().toISOString(),
+                assertion: {
+                  schemaVersion: assertion.schemaVersion,
+                  kind: 'element-contains-text',
+                  selector: assertion.selector,
+                  expectedText: event.target.value,
+                },
+              })
+            }
+          />
+        </>
+      );
+    }
+    case 'url-matches': {
+      const assertion = step.assertion;
+      return (
+        <>
+          <label className="field-label" htmlFor="assertion-url">
+            Expected URL
+          </label>
+          <input
+            id="assertion-url"
+            className="url-input"
+            value={assertion.expectedUrl}
+            onChange={(event) =>
+              onChange({
+                ...step,
+                updatedAt: new Date().toISOString(),
+                assertion: {
+                  schemaVersion: assertion.schemaVersion,
+                  kind: 'url-matches',
+                  expectedUrl: event.target.value,
+                  matchMode: assertion.matchMode,
+                },
+              })
+            }
+          />
+        </>
+      );
+    }
+    default:
+      return (
+        <p className="empty-state">
+          This assertion type has no editable parameters in the current Phase 4
+          slice.
+        </p>
+      );
+  }
 }

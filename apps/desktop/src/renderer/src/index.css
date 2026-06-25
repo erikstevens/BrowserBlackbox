@@ -138,6 +138,86 @@
     @apply border-transparent bg-shell-accent font-semibold text-white;
   }
 
+  .button-danger {
+    @apply border-transparent bg-red-700/80 text-white;
+  }
+
+  .panel-header {
+    @apply flex flex-wrap items-start justify-between gap-4;
+  }
+
+  .panel-copy {
+    @apply mb-0 mt-3 max-w-[48rem] text-sm leading-[1.7] text-shell-muted;
+  }
+
+  .recording-toolbar {
+    @apply flex flex-wrap gap-3;
+  }
+
+  .recording-review-grid {
+    @apply mt-5 grid gap-5 xl:grid-cols-[minmax(0,20rem)_minmax(0,1fr)];
+  }
+
+  .step-review-list {
+    @apply grid gap-3;
+  }
+
+  .step-review-card {
+    @apply w-full rounded-2xl border border-shell-border bg-black/10 p-4 text-left transition-colors duration-100;
+  }
+
+  .step-review-card-selected {
+    @apply border-shell-accent bg-[rgba(231,111,81,0.12)];
+  }
+
+  .step-review-header {
+    @apply flex flex-wrap items-center justify-between gap-2;
+  }
+
+  .step-index {
+    @apply text-[0.75rem] uppercase tracking-[0.18em] text-shell-muted;
+  }
+
+  .step-title {
+    @apply mb-0 mt-3 text-base font-semibold leading-[1.4] text-shell-text;
+  }
+
+  .step-summary {
+    @apply mb-0 mt-2 break-words text-sm leading-[1.6] text-shell-muted;
+  }
+
+  .step-review-tags {
+    @apply mt-3 flex flex-wrap gap-2;
+  }
+
+  .review-tag {
+    @apply rounded-full border border-shell-border px-2 py-1 text-[0.72rem] uppercase tracking-[0.14em] text-shell-muted;
+  }
+
+  .step-editor-shell {
+    @apply rounded-2xl border border-shell-border bg-black/10 p-5;
+  }
+
+  .step-editor-header {
+    @apply flex flex-wrap items-start justify-between gap-4;
+  }
+
+  .step-editor-title {
+    @apply mb-0 mt-3 text-2xl leading-[1.15];
+  }
+
+  .step-editor-actions {
+    @apply flex flex-wrap gap-3;
+  }
+
+  .editor-form-grid {
+    @apply mt-4 grid;
+  }
+
+  .step-editor-footer {
+    @apply mt-5 grid gap-2 rounded-2xl border border-shell-border bg-black/10 p-4;
+  }
+
   .lane-list {
     @apply mt-5 grid list-none gap-3 p-0;
   }
