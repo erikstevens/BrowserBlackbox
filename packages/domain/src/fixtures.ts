@@ -199,6 +199,33 @@ export const checkpointFixture: Checkpoint = {
     localStorage: true,
     sessionStorage: true,
   },
+  snapshot: {
+    capturedAt: '2026-06-24T12:00:04.000Z',
+    pageUrl: 'https://example.test/dashboard',
+    cookies: [
+      {
+        name: 'session',
+        value: 'opaque-session',
+        domain: 'example.test',
+        path: '/',
+        expires: -1,
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ],
+    origins: [
+      {
+        origin: 'https://example.test',
+        localStorage: {
+          auth_state: 'signed-in',
+        },
+        sessionStorage: {
+          dashboard_tab: 'overview',
+        },
+      },
+    ],
+  },
 };
 
 export const artifactManifestFixture: ArtifactManifest = {

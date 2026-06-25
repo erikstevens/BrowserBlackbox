@@ -1,4 +1,4 @@
-import type { RecordedStep } from '@browser-blackbox/domain';
+import type { BrowserContextSnapshot, Checkpoint, RecordedStep } from '@browser-blackbox/domain';
 
 export type BrowserRuntimePhase =
   | 'idle'
@@ -42,12 +42,18 @@ export type BrowserReplayPlan = {
 export type BrowserReplayRequest = {
   targetUrl?: string | null;
   steps: RecordedStep[];
+  checkpoints: Checkpoint[];
   plan: BrowserReplayPlan;
 };
 
 export type BrowserReplayCommandResult = BrowserRuntimeCommandResult & {
   completedStepIds: string[];
   pausedAtStepId: string | null;
+  restoredCheckpointId: string | null;
+  capturedCheckpoints: Array<{
+    checkpointId: string;
+    snapshot: BrowserContextSnapshot;
+  }>;
 };
 
 export type BrowserRuntimeEventCategory =

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import {
+  type BrowserContextSnapshot,
   checkpointFixture,
   domainVersions,
   recordedStepFixture,
@@ -74,7 +75,13 @@ type WorkspaceState = {
   previewReplayToSelectedStep: (mode?: 'up-to-step' | 'pause-on-step') => void;
   previewReplayFromCheckpoint: (checkpointId: string) => void;
   prepareReplayExecution: () => void;
-  completeReplayExecution: (completedStepIds: string[]) => void;
+  completeReplayExecution: (
+    completedStepIds: string[],
+    capturedCheckpoints?: Array<{
+      checkpointId: string;
+      snapshot: BrowserContextSnapshot;
+    }>,
+  ) => void;
 };
 
 export function createInitialWorkspaceState(): WorkspaceState {
@@ -289,13 +296,16 @@ export function createInitialWorkspaceState(): WorkspaceState {
           ),
         };
       }),
-    completeReplayExecution: (completedStepIds) =>
+    completeReplayExecution: (completedStepIds, capturedCheckpoints = []) =>
       useWorkspaceStore.setState((state) => {
         if (!state.replayPlan) {
           return state;
         }
 
         const currentStepIds = new Set(completedStepIds);
+        const checkpointSnapshots = new Map(
+          capturedCheckpoints.map((entry) => [entry.checkpointId, entry.snapshot]),
+        );
         return {
           replayPlan: null,
           recordingSession: {
@@ -327,6 +337,8 @@ export function createInitialWorkspaceState(): WorkspaceState {
                   ...checkpoint,
                   status: 'valid',
                   invalidationReasons: [],
+                  snapshot:
+                    checkpointSnapshots.get(checkpoint.id) ?? checkpoint.snapshot,
                 };
               }),
             },
@@ -421,6 +433,7 @@ function createWorkspaceRecordingSeed(): RecordingSessionSnapshot {
     label: 'Dashboard visible',
     createdAt,
     dependencyStepIds: [step1.id, step2.id, step3.id, step4.id],
+    snapshot: checkpointFixture.snapshot,
   };
 
   return {
@@ -508,10 +521,23 @@ function maybeCaptureRecordedStep(
     return recordingSession;
   }
 
-  return insertRecordingStep(recordingSession, {
+  const nextSession = insertRecordingStep(recordingSession, {
     index: recordingSession.present.steps.length,
     step,
   });
+
+  const checkpoint = buildCapturedCheckpoint(step, nextSession.present.steps);
+  if (!checkpoint) {
+    return nextSession;
+  }
+
+  return {
+    ...nextSession,
+    present: {
+      ...nextSession.present,
+      checkpoints: [...nextSession.present.checkpoints, checkpoint],
+    },
+  };
 }
 
 function buildCapturedStep(event: BrowserRuntimeEvent): RecordedStep | null {
@@ -610,6 +636,32 @@ function buildCapturedStep(event: BrowserRuntimeEvent): RecordedStep | null {
   }
 
   return null;
+}
+
+function buildCapturedCheckpoint(
+  step: RecordedStep,
+  steps: RecordedStep[],
+): Checkpoint | null {
+  if (step.kind !== 'action' || step.action.type !== 'navigate') {
+    return null;
+  }
+
+  const dependencyStepIds = steps
+    .slice(0, steps.findIndex((entry) => entry.id === step.id) + 1)
+    .map((entry) => entry.id);
+
+  return {
+    ...checkpointFixture,
+    id: `checkpoint-${step.id}`,
+    label: `Resume after ${step.title}`,
+    kind: 'step-boundary',
+    createdAt: step.updatedAt,
+    stepId: step.id,
+    dependencyStepIds,
+    status: 'valid',
+    invalidationReasons: [],
+    snapshot: undefined,
+  };
 }
 
 function asRecord(

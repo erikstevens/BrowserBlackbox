@@ -1049,6 +1049,84 @@ function validateCheckpoint(value: unknown, issues: IssueCollector): value is Ch
     });
   }
 
+  if (value.snapshot !== undefined) {
+    if (!isRecord(value.snapshot)) {
+      issues.push('snapshot must be an object when present');
+    } else {
+      if (!isIsoDate(value.snapshot.capturedAt)) {
+        issues.push('snapshot.capturedAt must be an ISO timestamp');
+      }
+
+      if (!isNonEmptyString(value.snapshot.pageUrl)) {
+        issues.push('snapshot.pageUrl must be a non-empty string');
+      }
+
+      if (!Array.isArray(value.snapshot.cookies)) {
+        issues.push('snapshot.cookies must be an array');
+      } else {
+        value.snapshot.cookies.forEach((cookie, index) => {
+          if (!isRecord(cookie)) {
+            issues.push(`snapshot.cookies[${index}] must be an object`);
+            return;
+          }
+
+          ['name', 'value', 'domain', 'path'].forEach((field) => {
+            if (!isNonEmptyString(cookie[field])) {
+              issues.push(`snapshot.cookies[${index}].${field} must be a non-empty string`);
+            }
+          });
+
+          if (typeof cookie.expires !== 'number') {
+            issues.push(`snapshot.cookies[${index}].expires must be a number`);
+          }
+
+          ['httpOnly', 'secure'].forEach((field) => {
+            if (!isBoolean(cookie[field])) {
+              issues.push(`snapshot.cookies[${index}].${field} must be a boolean`);
+            }
+          });
+
+          validateLiteral(
+            issues,
+            cookie.sameSite,
+            `snapshot.cookies[${index}].sameSite`,
+            ['Strict', 'Lax', 'None'] as const,
+          );
+        });
+      }
+
+      if (!Array.isArray(value.snapshot.origins)) {
+        issues.push('snapshot.origins must be an array');
+      } else {
+        value.snapshot.origins.forEach((origin, index) => {
+          if (!isRecord(origin)) {
+            issues.push(`snapshot.origins[${index}] must be an object`);
+            return;
+          }
+
+          if (!isNonEmptyString(origin.origin)) {
+            issues.push(`snapshot.origins[${index}].origin must be a non-empty string`);
+          }
+
+          ['localStorage', 'sessionStorage'].forEach((field) => {
+            if (!isRecord(origin[field])) {
+              issues.push(`snapshot.origins[${index}].${field} must be an object`);
+              return;
+            }
+
+            for (const [key, entry] of Object.entries(origin[field])) {
+              if (typeof entry !== 'string') {
+                issues.push(
+                  `snapshot.origins[${index}].${field}.${key} must be a string`,
+                );
+              }
+            }
+          });
+        });
+      }
+    }
+  }
+
   return true;
 }
 

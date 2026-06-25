@@ -41,6 +41,13 @@ function checkpoint(id: string, stepId: string, dependencyStepIds: string[], sta
     dependencyStepIds,
     status,
     invalidationReasons: status === 'stale' ? ['Edited dependency'] : [],
+    snapshot:
+      status === 'valid'
+        ? {
+            ...checkpointFixture.snapshot!,
+            pageUrl: `https://example.test/${id}`,
+          }
+        : checkpointFixture.snapshot,
   };
 }
 
@@ -98,6 +105,26 @@ describe('replay planning', () => {
     expect(plan.startStrategy).toBe('start');
     expect(plan.checkpointStatus).toBe('stale');
     expect(plan.executionStepIds).toEqual(['step-1', 'step-2']);
+  });
+
+  it('does not treat metadata-only checkpoints as resumable', () => {
+    const session = createRecordingSession({
+      steps: [
+        actionStep('step-1', 'Open'),
+        actionStep('step-2', 'Fill', ['step-1']),
+        actionStep('step-3', 'Submit', ['step-2']),
+      ],
+      checkpoints: [
+        {
+          ...checkpoint('checkpoint-2', 'step-2', ['step-1', 'step-2']),
+          snapshot: undefined,
+        },
+      ],
+    });
+
+    const plan = createReplayToStepPlan(session, 'step-3');
+    expect(plan.startStrategy).toBe('start');
+    expect(plan.checkpointId).toBeNull();
   });
 
   it('marks replayed steps as pending regeneration', () => {

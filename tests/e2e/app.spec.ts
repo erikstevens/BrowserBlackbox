@@ -49,7 +49,7 @@ test.describe('desktop acceptance', () => {
     await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
     await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
 
-    await expect(window.locator('.status-running')).toContainText('running');
+    await expect(statusRowPill(window, 'Phase')).toContainText('running');
     await expect(window.locator('.status-health-healthy')).toContainText('healthy');
     await expect(window.getByText('Attached', { exact: true }).first()).toBeVisible();
     await expect(statusRowValue(window, 'Target')).toContainText(`${fixtureServer.origin}/`);
@@ -76,7 +76,7 @@ test.describe('desktop acceptance', () => {
   test('stops the managed session and returns the runtime surface to idle', async () => {
     await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
     await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
-    await expect(window.locator('.status-running')).toContainText('running');
+    await expect(statusRowPill(window, 'Phase')).toContainText('running');
 
     await window.getByRole('button', { name: 'Stop session' }).click();
 
@@ -98,7 +98,7 @@ test.describe('desktop acceptance', () => {
     await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
     await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
 
-    await expect(window.locator('.status-running')).toContainText('running');
+    await expect(statusRowPill(window, 'Phase')).toContainText('running');
     await expect(window.getByTestId('recorded-step-list')).toContainText(
       `Navigate to ${fixtureServer.origin}/`,
     );
@@ -212,4 +212,11 @@ function statusRowValue(window: Page, label: string) {
     .locator('.status-row')
     .filter({ has: window.locator('.status-label', { hasText: label }) })
     .locator('.status-value');
+}
+
+function statusRowPill(window: Page, label: string) {
+  return window
+    .locator('.status-row')
+    .filter({ has: window.locator('.status-label', { hasText: label }) })
+    .locator('.status-pill');
 }

@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import type { Assertion, RecordedStep } from '@browser-blackbox/domain';
+import type {
+  Assertion,
+  BrowserContextSnapshot,
+  Checkpoint,
+  RecordedStep,
+} from '@browser-blackbox/domain';
 import { chromium } from 'playwright';
 import type {
   BrowserLaunchRequest,
@@ -44,6 +49,9 @@ type ConnectedLocator = {
 type ConnectedPage = {
   context: () => {
     newCDPSession: (page: ConnectedPage) => Promise<ConnectedCdpSession>;
+    cookies: () => Promise<BrowserContextSnapshot['cookies']>;
+    addCookies: (cookies: BrowserContextSnapshot['cookies']) => Promise<void>;
+    clearCookies: () => Promise<void>;
   };
   goto: (targetUrl: string) => Promise<unknown>;
   reload: () => Promise<unknown>;
@@ -56,6 +64,7 @@ type ConnectedPage = {
     press: (key: string) => Promise<void>;
   };
   url: () => string;
+  evaluate: (pageFunction: (arg?: unknown) => unknown, arg?: unknown) => Promise<unknown>;
   [key: string]: unknown;
 };
 
@@ -277,17 +286,32 @@ export class BrowserSessionManager {
       throw new Error('A managed browser session must be running before replay can execute.');
     }
 
-    if (
-      request.plan.mode === 'from-checkpoint' &&
-      request.plan.startStrategy === 'checkpoint'
-    ) {
+    const selectedCheckpoint = request.plan.checkpointId
+      ? request.checkpoints.find((checkpoint) => checkpoint.id === request.plan.checkpointId) ?? null
+      : null;
+    const checkpointRestorable = selectedCheckpoint
+      ? isRestorableCheckpoint(selectedCheckpoint)
+      : false;
+    const shouldRestoreCheckpoint =
+      request.plan.startStrategy === 'checkpoint' && selectedCheckpoint !== null;
+
+    if (request.plan.mode === 'from-checkpoint' && shouldRestoreCheckpoint && !checkpointRestorable) {
       throw new Error(
-        'Checkpoint restore is not implemented yet. Use Replay from start or Replay to step instead.',
+        `Checkpoint ${selectedCheckpoint.label} cannot be restored because no compatible snapshot is available.`,
       );
     }
 
-    const stepsToExecute = this.resolveReplaySteps(request.steps, request.plan);
+    if (shouldRestoreCheckpoint && checkpointRestorable) {
+      await this.restoreCheckpoint(selectedCheckpoint);
+    }
+
+    const stepsToExecute = this.resolveReplaySteps(
+      request.steps,
+      request.plan,
+      shouldRestoreCheckpoint && checkpointRestorable,
+    );
     const completedStepIds: string[] = [];
+    const capturedCheckpoints: BrowserReplayCommandResult['capturedCheckpoints'] = [];
     this.emitEvent(
       'replay',
       'replay.execution.started',
@@ -332,6 +356,28 @@ export class BrowserSessionManager {
             stepKind: step.kind,
           },
         );
+
+        const checkpoint = request.checkpoints.find(
+          (entry) => entry.status === 'valid' && entry.stepId === step.id,
+        );
+        if (checkpoint) {
+          const snapshot = await this.captureCheckpointSnapshot();
+          capturedCheckpoints.push({
+            checkpointId: checkpoint.id,
+            snapshot,
+          });
+          this.emitEvent(
+            'replay',
+            'replay.checkpoint.captured',
+            'info',
+            `Captured checkpoint snapshot for ${checkpoint.label}.`,
+            'runtime_manager',
+            {
+              checkpointId: checkpoint.id,
+              stepId: step.id,
+            },
+          );
+        }
       }
 
       const pausedAtStepId =
@@ -365,6 +411,9 @@ export class BrowserSessionManager {
         state: this.getState(),
         completedStepIds,
         pausedAtStepId,
+        restoredCheckpointId:
+          shouldRestoreCheckpoint && checkpointRestorable ? selectedCheckpoint?.id ?? null : null,
+        capturedCheckpoints,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -561,17 +610,19 @@ export class BrowserSessionManager {
   private resolveReplaySteps(
     steps: RecordedStep[],
     plan: BrowserReplayRequest['plan'],
+    checkpointRestored: boolean,
   ): RecordedStep[] {
     if (
       plan.startStrategy === 'checkpoint' &&
       plan.mode !== 'from-checkpoint' &&
+      !checkpointRestored &&
       plan.targetStepId !== null
     ) {
       this.emitEvent(
         'replay',
         'replay.checkpoint.fallback',
         'warn',
-        'Checkpoint restore is not implemented yet. Falling back to replay from start.',
+        'Checkpoint snapshot is unavailable. Falling back to replay from start.',
         'runtime_manager',
         {
           checkpointId: plan.checkpointId,
@@ -798,6 +849,101 @@ export class BrowserSessionManager {
       );
     }
   }
+
+  private async captureCheckpointSnapshot(): Promise<BrowserContextSnapshot> {
+    if (this.page === null) {
+      throw new Error('Managed page is not available for checkpoint capture.');
+    }
+
+    const cookies = await this.page.context().cookies();
+    const pageUrl = this.page.url();
+    const origins = (await this.page.evaluate(() => {
+      const readStorage = (storage: Storage): Record<string, string> => {
+        const entries: Record<string, string> = {};
+        for (let index = 0; index < storage.length; index += 1) {
+          const key = storage.key(index);
+          if (key === null) {
+            continue;
+          }
+          entries[key] = storage.getItem(key) ?? '';
+        }
+        return entries;
+      };
+
+      return [
+        {
+          origin: window.location.origin,
+          localStorage: readStorage(window.localStorage),
+          sessionStorage: readStorage(window.sessionStorage),
+        },
+      ];
+    })) as BrowserContextSnapshot['origins'];
+
+    return {
+      capturedAt: new Date().toISOString(),
+      pageUrl,
+      cookies,
+      origins,
+    };
+  }
+
+  private async restoreCheckpoint(checkpoint: Checkpoint): Promise<void> {
+    if (this.page === null) {
+      throw new Error('Managed page is not available for checkpoint restore.');
+    }
+
+    const snapshot = checkpoint.snapshot;
+    if (!snapshot) {
+      throw new Error(`Checkpoint ${checkpoint.label} does not include a restorable snapshot.`);
+    }
+
+    await this.page.context().clearCookies();
+    if (snapshot.cookies.length > 0) {
+      await this.page.context().addCookies(snapshot.cookies);
+    }
+
+    for (const originSnapshot of snapshot.origins) {
+      await this.page.goto(originSnapshot.origin);
+      await this.page.evaluate(
+        (arg) => {
+          const { localStorageEntries, sessionStorageEntries } = arg as {
+            localStorageEntries: Record<string, string>;
+            sessionStorageEntries: Record<string, string>;
+          };
+          window.localStorage.clear();
+          window.sessionStorage.clear();
+
+          Object.entries(localStorageEntries).forEach(([key, value]) => {
+            window.localStorage.setItem(key, value);
+          });
+          Object.entries(sessionStorageEntries).forEach(([key, value]) => {
+            window.sessionStorage.setItem(key, value);
+          });
+        },
+        {
+          localStorageEntries: originSnapshot.localStorage,
+          sessionStorageEntries: originSnapshot.sessionStorage,
+        },
+      );
+    }
+
+    await this.page.goto(snapshot.pageUrl);
+    this.state = {
+      ...this.state,
+      pageUrl: this.page.url(),
+      lastError: null,
+    };
+    this.emitEvent(
+      'replay',
+      'replay.checkpoint.restored',
+      'info',
+      `Restored checkpoint ${checkpoint.label}.`,
+      'runtime_manager',
+      {
+        checkpointId: checkpoint.id,
+      },
+    );
+  }
 }
 
 const defaultConnector: PlaywrightConnector = {
@@ -815,4 +961,10 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function globToRegExp(glob: string): RegExp {
   const escaped = glob.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
   return new RegExp(`^${escaped.replace(/\*/g, '.*')}$`);
+}
+
+function isRestorableCheckpoint(checkpoint: Checkpoint): checkpoint is Checkpoint & {
+  snapshot: BrowserContextSnapshot;
+} {
+  return checkpoint.status === 'valid' && checkpoint.snapshot !== undefined;
 }

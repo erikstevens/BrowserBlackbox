@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { domainVersions, type RecordedStep } from '@browser-blackbox/domain';
+import { checkpointFixture, domainVersions, type RecordedStep } from '@browser-blackbox/domain';
 import type { ManagedBrowserSurface } from './contracts';
 import { BrowserSessionManager } from './manager';
 
@@ -16,10 +16,14 @@ function createConnectorStub() {
   const sentCommands: string[] = [];
   const navigatedUrls: string[] = [];
   const actionLog: string[] = [];
+  const restoredCookies: Array<{ name: string; value: string; domain: string; path: string; expires: number; httpOnly: boolean; secure: boolean; sameSite: 'Strict' | 'Lax' | 'None' }> = [];
   let disconnected = false;
   let detached = false;
   let pageUrl = 'about:blank';
   let headingVisible = false;
+  let currentOrigin = 'about:blank';
+  const localStorageByOrigin = new Map<string, Record<string, string>>();
+  const sessionStorageByOrigin = new Map<string, Record<string, string>>();
   let cdpEventListener:
     | ((data: { method: string; params?: Record<string, unknown> }) => void)
     | null = null;
@@ -62,6 +66,7 @@ function createConnectorStub() {
     context: () => context,
     goto: async (targetUrl: string) => {
       pageUrl = targetUrl;
+      currentOrigin = new URL(targetUrl).origin;
       navigatedUrls.push(targetUrl);
       actionLog.push(`goto:${targetUrl}`);
     },
@@ -80,6 +85,31 @@ function createConnectorStub() {
       },
     },
     url: () => pageUrl,
+    evaluate: async (pageFunction: unknown, arg?: unknown) => {
+      if (typeof pageFunction !== 'function') {
+        throw new Error('evaluate stub requires a function');
+      }
+
+      const source = String(pageFunction);
+      if (source.includes('readStorage')) {
+        return [
+          {
+            origin: currentOrigin,
+            localStorage: localStorageByOrigin.get(currentOrigin) ?? {},
+            sessionStorage: sessionStorageByOrigin.get(currentOrigin) ?? {},
+          },
+        ] as unknown;
+      }
+
+      const payload = arg as {
+        localStorageEntries: Record<string, string>;
+        sessionStorageEntries: Record<string, string>;
+      };
+      localStorageByOrigin.set(currentOrigin, { ...payload.localStorageEntries });
+      sessionStorageByOrigin.set(currentOrigin, { ...payload.sessionStorageEntries });
+      actionLog.push(`restore-storage:${currentOrigin}`);
+      return undefined as unknown;
+    },
     getByRole: (role: string, options?: { name?: string }) =>
       createLocator(`${role}:${options?.name ?? ''}`, role === 'heading' ? 'heading' : 'button'),
     getByLabel: (label: string) => createLocator(`label:${label}`, 'label'),
@@ -100,6 +130,26 @@ function createConnectorStub() {
 
   const context = {
     newCDPSession: async () => cdpSession,
+    cookies: async () => [
+      {
+        name: 'session',
+        value: 'opaque-session',
+        domain: 'example.com',
+        path: '/',
+        expires: -1,
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax' as const,
+      },
+    ],
+    addCookies: async (cookies: typeof restoredCookies) => {
+      restoredCookies.splice(0, restoredCookies.length, ...cookies);
+      actionLog.push(`restore-cookies:${cookies.length}`);
+    },
+    clearCookies: async () => {
+      restoredCookies.splice(0, restoredCookies.length);
+      actionLog.push('clear-cookies');
+    },
     pages: () => [page],
   };
 
@@ -121,8 +171,17 @@ function createConnectorStub() {
         cdpEventListener?.({ method, params });
       },
       actionLog: () => [...actionLog],
+      restoredCookies: () => [...restoredCookies],
       navigatedUrls: () => [...navigatedUrls],
       sentCommands: () => [...sentCommands],
+      seedOriginState: (
+        origin: string,
+        localStorage: Record<string, string>,
+        sessionStorage: Record<string, string>,
+      ) => {
+        localStorageByOrigin.set(origin, { ...localStorage });
+        sessionStorageByOrigin.set(origin, { ...sessionStorage });
+      },
     },
   };
 }
@@ -287,6 +346,14 @@ describe('BrowserSessionManager', () => {
     const result = await manager.executeReplay({
       targetUrl: 'https://example.com/login',
       steps,
+      checkpoints: [
+        {
+          ...checkpointFixture,
+          id: 'checkpoint-dashboard',
+          stepId: 'step-assert-dashboard',
+          dependencyStepIds: steps.map((step) => step.id),
+        },
+      ],
       plan: {
         mode: 'from-start',
         targetStepId: 'step-assert-dashboard',
@@ -297,6 +364,9 @@ describe('BrowserSessionManager', () => {
     });
 
     expect(result.completedStepIds).toEqual(steps.map((step) => step.id));
+    expect(result.capturedCheckpoints).toHaveLength(1);
+    expect(result.capturedCheckpoints[0]?.checkpointId).toBe('checkpoint-dashboard');
+    expect(result.capturedCheckpoints[0]?.snapshot.pageUrl).toBe('https://example.com/login');
     expect(connectorStub.state.actionLog()).toEqual([
       'goto:https://example.com/',
       'goto:https://example.com/login',
@@ -305,23 +375,87 @@ describe('BrowserSessionManager', () => {
     ]);
   });
 
-  it('rejects explicit from-checkpoint replay until checkpoint restore exists', async () => {
+  it('restores and resumes from a compatible checkpoint snapshot', async () => {
     const connectorStub = createConnectorStub();
     const manager = new BrowserSessionManager(connectorStub.connector);
     manager.registerSurface(createSurfaceStub());
     await manager.launch({ targetUrl: 'https://example.com/' });
+    connectorStub.state.seedOriginState(
+      'https://example.com',
+      { auth_state: 'signed-in' },
+      { dashboard_tab: 'overview' },
+    );
 
-    await expect(
-      manager.executeReplay({
-        steps: [],
-        plan: {
-          mode: 'from-checkpoint',
-          targetStepId: null,
-          checkpointId: 'checkpoint-1',
-          startStrategy: 'checkpoint',
-          executionStepIds: [],
+    const checkpoint = {
+      ...checkpointFixture,
+      id: 'checkpoint-dashboard',
+      label: 'Dashboard state',
+      stepId: 'step-submit-login',
+      dependencyStepIds: ['step-open-login', 'step-fill-email', 'step-submit-login'],
+      snapshot: {
+        capturedAt: '2026-06-25T12:03:00.000Z',
+        pageUrl: 'https://example.com/dashboard',
+        cookies: [
+          {
+            name: 'session',
+            value: 'restored-token',
+            domain: 'example.com',
+            path: '/',
+            expires: -1,
+            httpOnly: true,
+            secure: true,
+            sameSite: 'Lax' as const,
+          },
+        ],
+        origins: [
+          {
+            origin: 'https://example.com',
+            localStorage: {
+              auth_state: 'signed-in',
+            },
+            sessionStorage: {
+              dashboard_tab: 'overview',
+            },
+          },
+        ],
+      },
+    };
+
+    const result = await manager.executeReplay({
+      steps: [
+        {
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: 'step-assert-dashboard',
+          title: 'Assert dashboard heading',
+          kind: 'assertion',
+          status: 'active',
+          evidenceState: 'stale',
+          createdAt: '2026-06-25T12:00:00.000Z',
+          updatedAt: '2026-06-25T12:00:00.000Z',
+          dependencyStepIds: ['step-submit-login'],
+          invalidatesEvidenceAfter: true,
+          assertion: {
+            schemaVersion: domainVersions.domainSchemaVersion,
+            kind: 'url-matches',
+            expectedUrl: 'https://example.com/dashboard',
+            matchMode: 'exact',
+          },
         },
-      }),
-    ).rejects.toThrow('Checkpoint restore is not implemented yet.');
+      ],
+      checkpoints: [checkpoint],
+      plan: {
+        mode: 'from-checkpoint',
+        targetStepId: 'step-assert-dashboard',
+        checkpointId: checkpoint.id,
+        startStrategy: 'checkpoint',
+        executionStepIds: ['step-assert-dashboard'],
+      },
+    });
+
+    expect(result.restoredCheckpointId).toBe(checkpoint.id);
+    expect(connectorStub.state.restoredCookies()).toEqual(checkpoint.snapshot?.cookies ?? []);
+    expect(connectorStub.state.actionLog()).toContain('clear-cookies');
+    expect(connectorStub.state.actionLog()).toContain('restore-storage:https://example.com');
+    expect(connectorStub.state.actionLog()).toContain('goto:https://example.com/dashboard');
   });
 });

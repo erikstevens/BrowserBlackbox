@@ -1,4 +1,5 @@
 import {
+  type BrowserContextSnapshot,
   DomainValidationError,
   parseCheckpoint,
   parseRecordedStep,
@@ -78,14 +79,16 @@ export function createReplayFromCheckpointPlan(
     mode: 'from-checkpoint',
     targetStepId: session.present.steps.at(-1)?.id ?? null,
     checkpointId,
-    startStrategy: checkpoint.status === 'valid' ? 'checkpoint' : 'start',
+    startStrategy: isRestorableCheckpoint(checkpoint) ? 'checkpoint' : 'start',
     checkpointStatus: checkpoint.status,
     checkpointReason:
-      checkpoint.status === 'valid'
+      isRestorableCheckpoint(checkpoint)
         ? `Replay resumes from checkpoint ${checkpoint.label}.`
-        : `Checkpoint ${checkpoint.label} is stale and cannot be trusted.`,
+        : checkpoint.status === 'valid'
+          ? `Checkpoint ${checkpoint.label} does not have a compatible snapshot yet.`
+          : `Checkpoint ${checkpoint.label} is stale and cannot be trusted.`,
     executionStepIds: session.present.steps
-      .slice(checkpoint.status === 'valid' ? checkpointIndex + 1 : 0)
+      .slice(isRestorableCheckpoint(checkpoint) ? checkpointIndex + 1 : 0)
       .map((step) => step.id),
   };
 }
@@ -136,7 +139,7 @@ export function findNearestValidCheckpoint(
   targetStepIndex: number,
 ): Checkpoint | null {
   const checkpoints = session.present.checkpoints
-    .filter((checkpoint) => checkpoint.status === 'valid')
+    .filter((checkpoint) => isRestorableCheckpoint(checkpoint))
     .filter((checkpoint) => getRequiredStepIndex(session, checkpoint.stepId) <= targetStepIndex)
     .sort(
       (left, right) =>
@@ -145,6 +148,12 @@ export function findNearestValidCheckpoint(
     );
 
   return checkpoints[0] ?? null;
+}
+
+function isRestorableCheckpoint(
+  checkpoint: Checkpoint,
+): checkpoint is Checkpoint & { snapshot: BrowserContextSnapshot } {
+  return checkpoint.status === 'valid' && checkpoint.snapshot !== undefined;
 }
 
 function getRequiredStepIndex(session: RecordingSession, stepId: string): number {

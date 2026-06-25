@@ -412,6 +412,26 @@ export type DiagnosisResult = {
   noDeterminationReason?: string;
 };
 
+export type BrowserContextSnapshot = {
+  capturedAt: string;
+  pageUrl: string;
+  cookies: Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite: 'Strict' | 'Lax' | 'None';
+  }>;
+  origins: Array<{
+    origin: string;
+    localStorage: Record<string, string>;
+    sessionStorage: Record<string, string>;
+  }>;
+};
+
 export type Checkpoint = {
   schemaVersion: SemanticVersion;
   checkpointModelVersion: SemanticVersion;
@@ -428,6 +448,7 @@ export type Checkpoint = {
     localStorage: boolean;
     sessionStorage: boolean;
   };
+  snapshot?: BrowserContextSnapshot;
 };
 
 export type ArtifactManifest = {

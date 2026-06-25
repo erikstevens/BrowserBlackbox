@@ -154,10 +154,11 @@ export function App() {
       const result = await window.desktopShell.runReplay({
         targetUrl: browserRuntime.targetUrl ?? url,
         steps: useWorkspaceStore.getState().recordingSession.present.steps,
+        checkpoints: useWorkspaceStore.getState().recordingSession.present.checkpoints,
         plan: replayPlan,
       });
       setBrowserRuntime(result.state);
-      completeReplayExecution(result.completedStepIds);
+      completeReplayExecution(result.completedStepIds, result.capturedCheckpoints);
     } catch (error) {
       setBrowserRuntime({
         ...browserRuntime,
@@ -533,6 +534,9 @@ export function App() {
                           <p className="step-title">{checkpoint.label}</p>
                           <p className="step-summary">
                             Step: {checkpoint.stepId}
+                          </p>
+                          <p className="step-summary">
+                            Snapshot: {checkpoint.snapshot ? 'ready' : 'metadata only'}
                           </p>
                           {checkpoint.invalidationReasons.length > 0 ? (
                             <p className="step-summary">

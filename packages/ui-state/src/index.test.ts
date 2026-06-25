@@ -130,6 +130,57 @@ describe('workspace recording review state', () => {
     expect(session.present.steps[0]?.kind).toBe('action');
   });
 
+  it('creates a metadata-only checkpoint after a captured navigation step', () => {
+    const state = useWorkspaceStore.getState();
+    state.beginRuntimeCapture('https://example.test/login', 'session-live-001');
+
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:10:00.000Z',
+        lastError: null,
+        recentEventCount: 1,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'capture-nav-001',
+        timestamp: '2026-06-25T12:10:00.000Z',
+        category: 'replay',
+        code: 'recording.step.captured',
+        level: 'info',
+        message: 'Navigate to login',
+        source: 'electron_shell',
+        data: {
+          capturedAt: '2026-06-25T12:10:00.000Z',
+          capture: {
+            kind: 'navigate',
+            title: 'Navigate to login',
+            url: 'https://example.test/login',
+            previousCaptureEventId: null,
+          },
+        },
+      },
+    });
+
+    const session = useWorkspaceStore.getState().recordingSession;
+    expect(session.present.checkpoints).toHaveLength(1);
+    expect(session.present.checkpoints[0]).toMatchObject({
+      kind: 'step-boundary',
+      stepId: 'step-captured-capture-nav-001',
+      status: 'valid',
+      snapshot: undefined,
+    });
+  });
+
   it('exports and rehydrates the working copy snapshot', () => {
     const state = useWorkspaceStore.getState();
     state.beginRuntimeCapture('https://example.test/login', 'session-live-001');
@@ -246,6 +297,32 @@ describe('workspace recording review state', () => {
       startStrategy: 'checkpoint',
       checkpointId: 'checkpoint-post-login-review',
       targetStepId: 'step-assert-dashboard',
+    });
+  });
+
+  it('falls back to start when a checkpoint is valid but has no snapshot payload', () => {
+    const state = useWorkspaceStore.getState();
+    const checkpoint = state.recordingSession.present.checkpoints[0];
+
+    if (!checkpoint) {
+      throw new Error('expected a checkpoint');
+    }
+
+    state.hydrateWorkingCopySnapshot({
+      ...state.exportWorkingCopySnapshot(),
+      checkpoints: [
+        {
+          ...checkpoint,
+          snapshot: undefined,
+        },
+      ],
+    });
+    useWorkspaceStore.getState().selectRecordedStep('step-assert-dashboard');
+    useWorkspaceStore.getState().previewReplayToSelectedStep();
+
+    expect(useWorkspaceStore.getState().replayPlan).toMatchObject({
+      startStrategy: 'start',
+      checkpointId: null,
     });
   });
 });
