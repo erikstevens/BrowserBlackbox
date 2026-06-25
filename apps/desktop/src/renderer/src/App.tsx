@@ -30,12 +30,33 @@ export function App() {
   );
   const undoRecordingEdit = useWorkspaceStore((state) => state.undoRecordingEdit);
   const redoRecordingEdit = useWorkspaceStore((state) => state.redoRecordingEdit);
+  const beginRuntimeCapture = useWorkspaceStore((state) => state.beginRuntimeCapture);
+  const hydrateWorkingCopySnapshot = useWorkspaceStore(
+    (state) => state.hydrateWorkingCopySnapshot,
+  );
+  const exportWorkingCopySnapshot = useWorkspaceStore(
+    (state) => state.exportWorkingCopySnapshot,
+  );
   const [pendingAction, setPendingAction] = useState<'launch' | 'stop' | null>(null);
+  const [persistenceReady, setPersistenceReady] = useState(false);
   const selectedRecordedStep = getSelectedRecordedStep(recordingSession);
   const { canUndo, canRedo } = getRecordingUndoAvailability(recordingSession);
   const selectedStepIndex = selectedRecordedStep
     ? recordingSession.present.steps.findIndex((step) => step.id === selectedRecordedStep.id)
     : -1;
+
+  useEffect(() => {
+    void window.desktopShell
+      .loadWorkingCopySnapshot()
+      .then((snapshot) => {
+        if (snapshot) {
+          hydrateWorkingCopySnapshot(snapshot);
+        }
+      })
+      .finally(() => {
+        setPersistenceReady(true);
+      });
+  }, [hydrateWorkingCopySnapshot]);
 
   useEffect(() => {
     void window.desktopShell
@@ -60,11 +81,20 @@ export function App() {
     return unsubscribe;
   }, [pushRuntimeUpdate, setBrowserRuntime, setRuntimeDiagnostics]);
 
+  useEffect(() => {
+    if (!persistenceReady) {
+      return;
+    }
+
+    void window.desktopShell.saveWorkingCopySnapshot(exportWorkingCopySnapshot());
+  }, [browserRuntime.sessionId, exportWorkingCopySnapshot, persistenceReady, recordingSession, url]);
+
   async function launchManagedChromium(): Promise<void> {
     setPendingAction('launch');
 
     try {
       const result = await window.desktopShell.launchBrowserSession({ targetUrl: url });
+      beginRuntimeCapture(result.state.targetUrl ?? url, result.state.sessionId);
       setBrowserRuntime(result.state);
     } catch (error) {
       setBrowserRuntime({

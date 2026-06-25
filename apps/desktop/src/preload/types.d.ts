@@ -1,3 +1,4 @@
+import type { StoredRunSnapshot } from '@browser-blackbox/persistence/src/contracts';
 import type {
   BrowserRuntimeDiagnostics,
   BrowserLaunchRequest,
@@ -14,6 +15,8 @@ export type DesktopShellApi = {
     request: BrowserLaunchRequest,
   ) => Promise<BrowserRuntimeCommandResult>;
   stopBrowserSession: () => Promise<BrowserRuntimeCommandResult>;
+  loadWorkingCopySnapshot: () => Promise<StoredRunSnapshot | null>;
+  saveWorkingCopySnapshot: (snapshot: StoredRunSnapshot) => Promise<void>;
   onBrowserRuntimeEvent: (listener: (update: BrowserRuntimeUpdate) => void) => () => void;
 };
 

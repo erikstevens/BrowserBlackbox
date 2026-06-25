@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import type { BrowserRuntimeUpdate } from '@browser-blackbox/runtime-browser';
 import {
   createInitialWorkspaceState,
   getSelectedRecordedStep,
@@ -78,5 +79,107 @@ describe('workspace recording review state', () => {
         (step) => step.id === insertedStep.id,
       )?.status,
     ).toBe('disabled');
+  });
+
+  it('replaces the seeded review flow with live captured steps', () => {
+    const state = useWorkspaceStore.getState();
+    state.beginRuntimeCapture('https://example.test/login', 'session-live-001');
+
+    const update: BrowserRuntimeUpdate = {
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:10:00.000Z',
+        lastError: null,
+        recentEventCount: 1,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'capture-001',
+        timestamp: '2026-06-25T12:10:00.000Z',
+        category: 'replay',
+        code: 'recording.step.captured',
+        level: 'info',
+        message: 'Click Sign in',
+        source: 'electron_shell',
+        data: {
+          capturedAt: '2026-06-25T12:10:00.000Z',
+          capture: {
+            kind: 'click',
+            title: 'Click Sign in',
+            selector: 'page.getByRole("button", { name: "Sign in" })',
+            previousCaptureEventId: null,
+          },
+        },
+      },
+    };
+
+    state.pushRuntimeUpdate(update);
+
+    const session = useWorkspaceStore.getState().recordingSession;
+    expect(session.present.steps).toHaveLength(1);
+    expect(session.present.steps[0]?.title).toBe('Click Sign in');
+    expect(session.present.steps[0]?.kind).toBe('action');
+  });
+
+  it('exports and rehydrates the working copy snapshot', () => {
+    const state = useWorkspaceStore.getState();
+    state.beginRuntimeCapture('https://example.test/login', 'session-live-001');
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:11:00.000Z',
+        lastError: null,
+        recentEventCount: 1,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'capture-002',
+        timestamp: '2026-06-25T12:11:00.000Z',
+        category: 'replay',
+        code: 'recording.step.captured',
+        level: 'info',
+        message: 'Fill Email',
+        source: 'electron_shell',
+        data: {
+          capturedAt: '2026-06-25T12:11:00.000Z',
+          capture: {
+            kind: 'fill',
+            title: 'Fill Email',
+            selector: 'page.getByLabel("Email")',
+            value: 'qa@example.test',
+            sensitive: false,
+            previousCaptureEventId: null,
+          },
+        },
+      },
+    });
+
+    const snapshot = useWorkspaceStore.getState().exportWorkingCopySnapshot();
+
+    useWorkspaceStore.setState(createInitialWorkspaceState());
+    useWorkspaceStore.getState().hydrateWorkingCopySnapshot(snapshot);
+
+    const hydrated = useWorkspaceStore.getState();
+    expect(hydrated.targetUrl).toBe('https://example.test/login');
+    expect(hydrated.recordingSession.present.steps).toHaveLength(1);
+    expect(hydrated.recordingSession.present.steps[0]?.title).toBe('Fill Email');
   });
 });

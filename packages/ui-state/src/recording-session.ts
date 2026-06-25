@@ -92,6 +92,28 @@ export function insertRecordingStep(
   });
 }
 
+export function replaceRecordingSession(
+  input: RecordingSessionSnapshot,
+  selectedStepId?: string | null,
+): RecordingSession {
+  const snapshot = normalizeSnapshot(input);
+
+  return {
+    present: snapshot,
+    history: {
+      past: [],
+      future: [],
+    },
+    selectedStepId: selectExistingStepId(selectedStepId ?? snapshot.steps[0]?.id ?? null, snapshot.steps),
+    lastMutation: {
+      kind: 'initialize',
+      affectedStepIds: [],
+      staleFromIndex: null,
+      invalidatedCheckpointIds: [],
+    },
+  };
+}
+
 export function replaceRecordingStep(
   session: RecordingSession,
   input: {

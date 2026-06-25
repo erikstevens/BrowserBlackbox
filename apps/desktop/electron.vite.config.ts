@@ -2,7 +2,11 @@ import { resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 
-const bundledMainWorkspacePackages = ['@browser-blackbox/runtime-browser'];
+const bundledMainWorkspacePackages = [
+  '@browser-blackbox/domain',
+  '@browser-blackbox/runtime-browser',
+  '@browser-blackbox/persistence',
+];
 const runtimeExternalPackages = [
   'playwright',
   'playwright-core',

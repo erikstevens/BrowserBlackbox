@@ -7,6 +7,9 @@ const desktopShellApi: DesktopShellApi = {
   getBrowserRuntimeDiagnostics: () => ipcRenderer.invoke('browser-runtime:get-diagnostics'),
   launchBrowserSession: (request) => ipcRenderer.invoke('browser-runtime:launch', request),
   stopBrowserSession: () => ipcRenderer.invoke('browser-runtime:stop'),
+  loadWorkingCopySnapshot: () => ipcRenderer.invoke('workspace:load-working-copy'),
+  saveWorkingCopySnapshot: (snapshot) =>
+    ipcRenderer.invoke('workspace:save-working-copy', snapshot),
   onBrowserRuntimeEvent: (listener) => {
     const handleRuntimeEvent = (_event: Electron.IpcRendererEvent, update: Parameters<typeof listener>[0]) => {
       listener(update);

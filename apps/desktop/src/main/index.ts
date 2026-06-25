@@ -2,6 +2,9 @@ import { app, BrowserView, BrowserWindow, ipcMain } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
+import { FileBackedSqliteStore } from '@browser-blackbox/persistence/src/file-store';
+import type { StoredRunSnapshot } from '@browser-blackbox/persistence/src/contracts';
+import { createSqliteEngine } from '@browser-blackbox/persistence/src/sqlite';
 import { BrowserSessionManager } from '@browser-blackbox/runtime-browser';
 import type {
   BrowserRuntimeDiagnostics,
@@ -27,6 +30,7 @@ let mainWindow: BrowserWindow | null = null;
 let workspaceBrowserView: BrowserView | null = null;
 let remoteDebuggingPort = 0;
 let runtimeEvents: BrowserRuntimeEvent[] = [];
+let lastCapturedRuntimeEventId: string | null = null;
 let runtimeHealth: BrowserRuntimeHealth = {
   status: 'idle',
   lastEventAt: null,
@@ -34,6 +38,7 @@ let runtimeHealth: BrowserRuntimeHealth = {
   recentEventCount: 0,
   subscriberCount: 0,
 };
+let workingCopyStorePromise: Promise<FileBackedSqliteStore> | null = null;
 
 app.commandLine.appendSwitch('remote-debugging-address', REMOTE_DEBUGGING_HOST);
 browserSessionManager.subscribe((event) => {
@@ -88,15 +93,44 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     'browser-runtime:launch',
     async (_event, request: BrowserLaunchRequest): Promise<BrowserRuntimeCommandResult> => {
+      lastCapturedRuntimeEventId = null;
       return browserSessionManager.launch(request);
     },
   );
 
   ipcMain.handle('browser-runtime:stop', async (): Promise<BrowserRuntimeCommandResult> => {
     const result = await browserSessionManager.stop();
-    await clearWorkspaceBrowserPane();
+    lastCapturedRuntimeEventId = null;
+    await clearWorkspaceBrowserPane().catch((error) => {
+      publishRuntimeEvent({
+        id: randomUUID(),
+        timestamp: new Date().toISOString(),
+        category: 'browser',
+        code: 'browser.placeholder.load_failed',
+        level: 'warn',
+        message: 'Failed to restore the idle embedded browser pane.',
+        source: 'electron_shell',
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    });
     return result;
   });
+
+  ipcMain.handle(
+    'workspace:load-working-copy',
+    async (): Promise<StoredRunSnapshot | null> => {
+      const store = await getWorkingCopyStore();
+      return store.loadSnapshot('workspace-working-copy');
+    },
+  );
+
+  ipcMain.handle(
+    'workspace:save-working-copy',
+    async (_event, snapshot: StoredRunSnapshot): Promise<void> => {
+      const store = await getWorkingCopyStore();
+      await store.saveSnapshot(snapshot);
+    },
+  );
 
   ipcMain.on('browser-runtime:subscribe', (event) => {
     runtimeHealth = deriveRuntimeHealth(
@@ -130,7 +164,18 @@ function attachWorkspaceBrowserView(window: BrowserWindow): void {
   workspaceBrowserView.setBackgroundColor('#101922');
   registerWorkspaceBrowserListeners(workspaceBrowserView);
   updateWorkspaceBrowserViewBounds();
-  void clearWorkspaceBrowserPane();
+  void clearWorkspaceBrowserPane().catch((error) => {
+    publishRuntimeEvent({
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      category: 'browser',
+      code: 'browser.placeholder.load_failed',
+      level: 'warn',
+      message: 'Failed to load the idle embedded browser pane.',
+      source: 'electron_shell',
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
 function updateWorkspaceBrowserViewBounds(): void {
@@ -185,6 +230,33 @@ async function clearWorkspaceBrowserPane(): Promise<void> {
 
 function registerWorkspaceBrowserListeners(view: BrowserView): void {
   view.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (message.startsWith('__BB_CAPTURE__')) {
+      try {
+        const payload = JSON.parse(message.slice('__BB_CAPTURE__'.length)) as {
+          payload?: Record<string, unknown>;
+          timestamp?: string;
+        };
+        if (payload.payload) {
+          publishRecordedStepCapture({
+            capturedAt: payload.timestamp ?? new Date().toISOString(),
+            payload: payload.payload,
+          });
+        }
+      } catch (error) {
+        publishRuntimeEvent({
+          id: randomUUID(),
+          timestamp: new Date().toISOString(),
+          category: 'console',
+          code: 'recording.capture.parse_failed',
+          level: 'warn',
+          message: 'Failed to parse embedded capture payload.',
+          source: 'electron_shell',
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+
     const severity = level >= 2 ? 'error' : level === 1 ? 'warn' : 'info';
     publishRuntimeEvent({
       id: randomUUID(),
@@ -199,6 +271,26 @@ function registerWorkspaceBrowserListeners(view: BrowserView): void {
         line,
         sourceId,
       },
+    });
+  });
+
+  view.webContents.on('did-finish-load', () => {
+    const currentUrl = view.webContents.getURL();
+    if (!currentUrl.startsWith('http://') && !currentUrl.startsWith('https://')) {
+      return;
+    }
+
+    void view.webContents.executeJavaScript(buildEmbeddedCaptureScript()).catch((error) => {
+      publishRuntimeEvent({
+        id: randomUUID(),
+        timestamp: new Date().toISOString(),
+        category: 'console',
+        code: 'recording.capture.inject_failed',
+        level: 'warn',
+        message: 'Failed to inject embedded capture listeners.',
+        source: 'electron_shell',
+        detail: error instanceof Error ? error.message : String(error),
+      });
     });
   });
 
@@ -234,6 +326,17 @@ function registerWorkspaceBrowserListeners(view: BrowserView): void {
       message: `Navigation committed for ${url}.`,
       source: 'electron_shell',
       data: {
+        url,
+      },
+    });
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      return;
+    }
+    publishRecordedStepCapture({
+      capturedAt: new Date().toISOString(),
+      payload: {
+        kind: 'navigate',
+        title: `Navigate to ${url}`,
         url,
       },
     });
@@ -300,6 +403,33 @@ function publishRuntimeEvent(event: BrowserRuntimeEvent): void {
     event,
   };
   mainWindow.webContents.send('browser-runtime:event', update);
+}
+
+function publishRecordedStepCapture(input: {
+  capturedAt: string;
+  payload: Record<string, unknown>;
+}): void {
+  const eventId = randomUUID();
+  publishRuntimeEvent({
+    id: eventId,
+    timestamp: input.capturedAt,
+    category: 'replay',
+    code: 'recording.step.captured',
+    level: 'info',
+    message:
+      typeof input.payload.title === 'string'
+        ? input.payload.title
+        : 'Captured recorded step.',
+    source: 'electron_shell',
+    data: {
+      capturedAt: input.capturedAt,
+      capture: {
+        ...input.payload,
+        previousCaptureEventId: lastCapturedRuntimeEventId,
+      },
+    },
+  });
+  lastCapturedRuntimeEventId = eventId;
 }
 
 function getRuntimeDiagnostics(): BrowserRuntimeDiagnostics {
@@ -409,4 +539,116 @@ async function allocateFreePort(): Promise<number> {
   });
 
   return address.port;
+}
+
+async function getWorkingCopyStore(): Promise<FileBackedSqliteStore> {
+  if (workingCopyStorePromise !== null) {
+    return workingCopyStorePromise;
+  }
+
+  workingCopyStorePromise = (async () => {
+    const sql = await createSqliteEngine();
+    const store = new FileBackedSqliteStore(
+      sql,
+      join(app.getPath('userData'), 'workspace', 'working-copy.sqlite'),
+    );
+    await store.open();
+    return store;
+  })();
+
+  return workingCopyStorePromise;
+}
+
+function buildEmbeddedCaptureScript(): string {
+  return `
+    (() => {
+      if (window.__browserBlackboxCaptureInstalled) {
+        return;
+      }
+      window.__browserBlackboxCaptureInstalled = true;
+      const emit = (payload) => {
+        console.log('__BB_CAPTURE__' + JSON.stringify({
+          timestamp: new Date().toISOString(),
+          payload,
+        }));
+      };
+      const normalizeText = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
+      const escapeDouble = (value) => String(value).replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+      const escapeSingle = (value) => String(value).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'");
+      const resolveLabel = (element) => {
+        if ('labels' in element && element.labels && element.labels.length > 0) {
+          return normalizeText(element.labels[0]?.textContent ?? '');
+        }
+        const id = element.getAttribute('id');
+        if (!id) return '';
+        const label = document.querySelector('label[for="' + CSS.escape(id) + '"]');
+        return label ? normalizeText(label.textContent ?? '') : '';
+      };
+      const resolveName = (element) => {
+        const ariaLabel = element.getAttribute('aria-label');
+        if (ariaLabel) return normalizeText(ariaLabel);
+        const label = resolveLabel(element);
+        if (label) return label;
+        if ('value' in element && typeof element.value === 'string' && element.value.trim().length > 0) {
+          return normalizeText(element.value);
+        }
+        return normalizeText(element.textContent ?? '') || normalizeText(element.getAttribute('name') ?? element.tagName.toLowerCase());
+      };
+      const resolveRole = (element) => {
+        if (element.getAttribute('role')) return element.getAttribute('role');
+        if (element.tagName === 'BUTTON') return 'button';
+        if (element.tagName === 'A') return 'link';
+        return '';
+      };
+      const selectorFor = (element) => {
+        const testId = element.getAttribute('data-testid') || element.getAttribute('data-test');
+        if (testId) return 'page.getByTestId("' + escapeDouble(testId) + '")';
+        const label = resolveLabel(element);
+        if (label) return 'page.getByLabel("' + escapeDouble(label) + '")';
+        const role = resolveRole(element);
+        const name = resolveName(element);
+        if (role && name) return 'page.getByRole("' + escapeDouble(role) + '", { name: "' + escapeDouble(name) + '" })';
+        if (element.id) return 'page.locator("#' + escapeDouble(String(element.id)) + '")';
+        if ('name' in element && typeof element.name === 'string' && element.name) {
+          return "page.locator('" + element.tagName.toLowerCase() + '[name=\\"" + escapeSingle(element.name) + "\\"]')";
+        }
+        return '';
+      };
+      document.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const element = target.closest('button, a, [role="button"], [data-testid], [data-test], input[type="button"], input[type="submit"]');
+        if (!(element instanceof HTMLElement)) return;
+        const selector = selectorFor(element);
+        if (!selector) return;
+        emit({
+          kind: 'click',
+          title: 'Click ' + (resolveName(element) || element.tagName.toLowerCase()),
+          selector,
+        });
+      }, true);
+      document.addEventListener('change', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLTextAreaElement) && !(target instanceof HTMLSelectElement)) return;
+        const selector = selectorFor(target);
+        if (!selector) return;
+        if (target instanceof HTMLSelectElement) {
+          emit({ kind: 'select-option', title: 'Select ' + resolveName(target), selector, value: target.value });
+          return;
+        }
+        if (target instanceof HTMLInputElement && (target.type === 'checkbox' || target.type === 'radio')) {
+          emit({ kind: 'set-checked', title: (target.checked ? 'Enable ' : 'Disable ') + resolveName(target), selector, checked: target.checked });
+          return;
+        }
+        const sensitive = target instanceof HTMLInputElement && target.type === 'password';
+        emit({
+          kind: 'fill',
+          title: 'Fill ' + resolveName(target),
+          selector,
+          value: sensitive ? '[REDACTED]' : target.value,
+          sensitive,
+        });
+      }, true);
+    })();
+  `;
 }

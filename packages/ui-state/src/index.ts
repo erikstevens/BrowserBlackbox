@@ -7,6 +7,7 @@ import {
   type Checkpoint,
   type RecordedStep,
 } from '@browser-blackbox/domain';
+import type { StoredRunSnapshot } from '@browser-blackbox/persistence/src/contracts';
 import type {
   BrowserRuntimeDiagnostics,
   BrowserRuntimeEvent,
@@ -23,11 +24,20 @@ import {
   redoRecordingSession,
   removeRecordingStep,
   reorderRecordingStep,
+  replaceRecordingSession,
   replaceRecordingStep,
   type RecordingSession,
   type RecordingSessionSnapshot,
   undoRecordingSession,
 } from './recording-session';
+import {
+  createStoredRunSnapshotFromWorkspace,
+  createWorkspaceWorkingCopyMetadata,
+  hydrateWorkspaceFromStoredRunSnapshot,
+  type WorkspaceWorkingCopyMetadata,
+} from './workspace-persistence';
+
+type CaptureTemplate = 'reload' | 'url-assertion';
 
 type WorkspaceState = {
   targetUrl: string;
@@ -35,21 +45,27 @@ type WorkspaceState = {
   runtimeHealth: BrowserRuntimeHealth;
   runtimeEvents: BrowserRuntimeEvent[];
   recordingSession: RecordingSession;
+  workingCopy: WorkspaceWorkingCopyMetadata;
   setTargetUrl: (targetUrl: string) => void;
   setBrowserRuntime: (browserRuntime: BrowserRuntimeState) => void;
   setRuntimeDiagnostics: (diagnostics: BrowserRuntimeDiagnostics) => void;
   pushRuntimeUpdate: (update: BrowserRuntimeUpdate) => void;
   selectRecordedStep: (stepId: string) => void;
   replaceRecordedStepInReview: (stepId: string, step: RecordedStep) => void;
-  insertStepAfterSelection: (template: 'reload' | 'url-assertion') => void;
+  insertStepAfterSelection: (template: CaptureTemplate) => void;
   moveRecordedStep: (stepId: string, direction: 'up' | 'down') => void;
   disableRecordedStepInReview: (stepId: string) => void;
   removeRecordedStepFromReview: (stepId: string) => void;
   undoRecordingEdit: () => void;
   redoRecordingEdit: () => void;
+  beginRuntimeCapture: (targetUrl: string, sessionId: string | null) => void;
+  hydrateWorkingCopySnapshot: (snapshot: StoredRunSnapshot) => void;
+  exportWorkingCopySnapshot: () => StoredRunSnapshot;
 };
 
 export function createInitialWorkspaceState(): WorkspaceState {
+  const now = '2026-06-25T12:00:00.000Z';
+
   return {
     targetUrl: 'https://example.com',
     browserRuntime: {
@@ -70,6 +86,9 @@ export function createInitialWorkspaceState(): WorkspaceState {
     },
     runtimeEvents: [],
     recordingSession: createWorkspaceRecordingSession(),
+    workingCopy: createWorkspaceWorkingCopyMetadata(now, {
+      flowId: 'workspace-working-copy',
+    }),
     setTargetUrl: (targetUrl) => useWorkspaceStore.setState({ targetUrl }),
     setBrowserRuntime: (browserRuntime) => useWorkspaceStore.setState({ browserRuntime }),
     setRuntimeDiagnostics: (diagnostics) =>
@@ -79,14 +98,19 @@ export function createInitialWorkspaceState(): WorkspaceState {
         runtimeEvents: diagnostics.recentEvents,
       }),
     pushRuntimeUpdate: (update) =>
-      useWorkspaceStore.setState((state) => ({
-        browserRuntime: update.state,
-        runtimeHealth: update.health,
-        runtimeEvents: [
+      useWorkspaceStore.setState((state) => {
+        const runtimeEvents = [
           update.event,
           ...state.runtimeEvents.filter((event) => event.id !== update.event.id),
-        ].slice(0, 80),
-      })),
+        ].slice(0, 80);
+
+        return {
+          browserRuntime: update.state,
+          runtimeHealth: update.health,
+          runtimeEvents,
+          recordingSession: maybeCaptureRecordedStep(state.recordingSession, update.event),
+        };
+      }),
     selectRecordedStep: (stepId) =>
       useWorkspaceStore.setState((state) => ({
         recordingSession: {
@@ -107,10 +131,15 @@ export function createInitialWorkspaceState(): WorkspaceState {
         const selectedIndex = state.recordingSession.present.steps.findIndex(
           (step) => step.id === selectedStepId,
         );
-        const anchorIndex = selectedIndex === -1 ? state.recordingSession.present.steps.length - 1 : selectedIndex;
+        const anchorIndex =
+          selectedIndex === -1
+            ? state.recordingSession.present.steps.length - 1
+            : selectedIndex;
         const anchorStep =
           state.recordingSession.present.steps[anchorIndex] ??
-          state.recordingSession.present.steps[state.recordingSession.present.steps.length - 1];
+          state.recordingSession.present.steps[
+            state.recordingSession.present.steps.length - 1
+          ];
         const nextStep = createInsertedStep(template, anchorStep);
 
         return {
@@ -122,7 +151,9 @@ export function createInitialWorkspaceState(): WorkspaceState {
       }),
     moveRecordedStep: (stepId, direction) =>
       useWorkspaceStore.setState((state) => {
-        const currentIndex = state.recordingSession.present.steps.findIndex((step) => step.id === stepId);
+        const currentIndex = state.recordingSession.present.steps.findIndex(
+          (step) => step.id === stepId,
+        );
 
         if (currentIndex === -1) {
           return state;
@@ -130,7 +161,10 @@ export function createInitialWorkspaceState(): WorkspaceState {
 
         const nextIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
 
-        if (nextIndex < 0 || nextIndex >= state.recordingSession.present.steps.length) {
+        if (
+          nextIndex < 0 ||
+          nextIndex >= state.recordingSession.present.steps.length
+        ) {
           return state;
         }
 
@@ -162,17 +196,61 @@ export function createInitialWorkspaceState(): WorkspaceState {
       useWorkspaceStore.setState((state) => ({
         recordingSession: redoRecordingSession(state.recordingSession),
       })),
+    beginRuntimeCapture: (targetUrl, sessionId) =>
+      useWorkspaceStore.setState(() => {
+        const nowAt = new Date().toISOString();
+        const metadata = createWorkspaceWorkingCopyMetadata(nowAt, {
+          flowId: 'workspace-working-copy',
+          sessionId: sessionId ?? undefined,
+        });
+
+        return {
+          targetUrl,
+          workingCopy: metadata,
+          recordingSession: replaceRecordingSession({
+            steps: [],
+            checkpoints: [],
+          }),
+        };
+      }),
+    hydrateWorkingCopySnapshot: (snapshot) =>
+      useWorkspaceStore.setState((state) => {
+        const hydrated = hydrateWorkspaceFromStoredRunSnapshot(snapshot);
+
+        return {
+          ...state,
+          targetUrl: hydrated.targetUrl,
+          workingCopy: hydrated.metadata,
+          recordingSession: replaceRecordingSession(
+            {
+              steps: hydrated.steps,
+              checkpoints: hydrated.checkpoints,
+            },
+            hydrated.steps[0]?.id ?? null,
+          ),
+        };
+      }),
+    exportWorkingCopySnapshot: () =>
+      createStoredRunSnapshotFromWorkspace({
+        targetUrl: useWorkspaceStore.getState().targetUrl,
+        browserRuntime: useWorkspaceStore.getState().browserRuntime,
+        recordingSession: useWorkspaceStore.getState().recordingSession,
+        workingCopy: useWorkspaceStore.getState().workingCopy,
+      }),
   };
 }
 
-export const useWorkspaceStore = create<WorkspaceState>(() => createInitialWorkspaceState());
+export const useWorkspaceStore = create<WorkspaceState>(() =>
+  createInitialWorkspaceState(),
+);
 
 export function getSelectedRecordedStep(
   recordingSession: RecordingSession,
 ): RecordedStep | null {
   return (
-    recordingSession.present.steps.find((step) => step.id === recordingSession.selectedStepId) ??
-    null
+    recordingSession.present.steps.find(
+      (step) => step.id === recordingSession.selectedStepId,
+    ) ?? null
   );
 }
 
@@ -282,7 +360,7 @@ function createActionStep(input: {
 }
 
 function createInsertedStep(
-  template: 'reload' | 'url-assertion',
+  template: CaptureTemplate,
   anchorStep: RecordedStep | undefined,
 ): RecordedStep {
   const timestamp = new Date().toISOString();
@@ -314,12 +392,139 @@ function createInsertedStep(
     assertion: {
       schemaVersion: domainVersions.domainSchemaVersion,
       kind: 'url-matches',
-      expectedUrl: anchorStep && anchorStep.kind === 'action' && anchorStep.action.type === 'navigate'
-        ? anchorStep.action.url
-        : 'https://example.test/dashboard',
+      expectedUrl:
+        anchorStep &&
+        anchorStep.kind === 'action' &&
+        anchorStep.action.type === 'navigate'
+          ? anchorStep.action.url
+          : 'https://example.test/dashboard',
       matchMode: 'exact',
     },
   };
 }
 
+function maybeCaptureRecordedStep(
+  recordingSession: RecordingSession,
+  event: BrowserRuntimeEvent,
+): RecordingSession {
+  const step = buildCapturedStep(event);
+  if (!step) {
+    return recordingSession;
+  }
+
+  return insertRecordingStep(recordingSession, {
+    index: recordingSession.present.steps.length,
+    step,
+  });
+}
+
+function buildCapturedStep(event: BrowserRuntimeEvent): RecordedStep | null {
+  if (event.code !== 'recording.step.captured') {
+    return null;
+  }
+
+  const capture = asRecord(event.data?.capture);
+  const nowAt =
+    typeof event.data?.capturedAt === 'string' ? event.data.capturedAt : event.timestamp;
+  const selector =
+    capture && typeof capture.selector === 'string' ? capture.selector : null;
+  const title =
+    capture && typeof capture.title === 'string' ? capture.title : event.message;
+  const kind = capture && typeof capture.kind === 'string' ? capture.kind : null;
+  const previousStepId =
+    capture && typeof capture.previousCaptureEventId === 'string'
+      ? `step-captured-${capture.previousCaptureEventId}`
+      : capture && typeof capture.previousStepId === 'string'
+        ? capture.previousStepId
+        : undefined;
+  const dependencyStepIds = previousStepId ? [previousStepId] : [];
+
+  if (kind === 'navigate' && typeof capture?.url === 'string') {
+    return createActionStep({
+      id: `step-captured-${event.id}`,
+      title,
+      createdAt: nowAt,
+      dependencyStepIds,
+      action: {
+        type: 'navigate',
+        url: capture.url,
+      },
+    });
+  }
+
+  if (kind === 'click' && selector) {
+    return createActionStep({
+      id: `step-captured-${event.id}`,
+      title,
+      createdAt: nowAt,
+      dependencyStepIds,
+      action: {
+        type: 'click',
+        selector,
+      },
+    });
+  }
+
+  if (
+    kind === 'fill' &&
+    selector &&
+    typeof capture?.value === 'string' &&
+    typeof capture?.sensitive === 'boolean'
+  ) {
+    return createActionStep({
+      id: `step-captured-${event.id}`,
+      title,
+      createdAt: nowAt,
+      dependencyStepIds,
+      action: {
+        type: 'fill',
+        selector,
+        value: capture.value,
+        sensitive: capture.sensitive,
+      },
+    });
+  }
+
+  if (kind === 'select-option' && selector && typeof capture?.value === 'string') {
+    return createActionStep({
+      id: `step-captured-${event.id}`,
+      title,
+      createdAt: nowAt,
+      dependencyStepIds,
+      action: {
+        type: 'select-option',
+        selector,
+        value: capture.value,
+      },
+    });
+  }
+
+  if (kind === 'set-checked' && selector && typeof capture?.checked === 'boolean') {
+    return createActionStep({
+      id: `step-captured-${event.id}`,
+      title,
+      createdAt: nowAt,
+      dependencyStepIds,
+      action: {
+        type: 'set-checked',
+        selector,
+        checked: capture.checked,
+      },
+    });
+  }
+
+  return null;
+}
+
+function asRecord(
+  value: unknown,
+): Record<string, string | boolean | undefined> | null {
+  if (typeof value === 'object' && value !== null) {
+    return value as Record<string, string | boolean | undefined>;
+  }
+
+  return null;
+}
+
 export * from './recording-session';
+export * from './workspace-persistence';
