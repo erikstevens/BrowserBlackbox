@@ -114,10 +114,12 @@ test.describe('desktop acceptance', () => {
     );
   });
 
-  test('surfaces selected-element inspection metadata from the embedded browser', async () => {
+  test('runs persistent inspect mode with hover overlay and selected metadata', async () => {
     await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
     await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
     await expect(statusRowPill(window, 'Phase')).toContainText('running');
+    await window.getByRole('button', { name: 'Enter inspect mode' }).click();
+    await expect(window.getByRole('button', { name: 'Exit inspect mode' })).toBeVisible();
 
     await electronApp.evaluate(async ({ BrowserWindow }) => {
       const browserWindow = BrowserWindow.getAllWindows()[0];
@@ -128,20 +130,52 @@ test.describe('desktop acceptance', () => {
           if (!(target instanceof HTMLElement)) {
             throw new Error('Inspection target was not found in the fixture page.');
           }
+          target.dispatchEvent(new MouseEvent('mousemove', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 20,
+            clientY: 20,
+          }));
           target.dispatchEvent(new MouseEvent('click', {
             bubbles: true,
             cancelable: true,
-            altKey: true,
-            shiftKey: true,
+            clientX: 20,
+            clientY: 20,
           }));
         })();
       `);
     });
 
+    await expect
+      .poll(async () => {
+        return electronApp.evaluate(async ({ BrowserWindow }) => {
+          const browserWindow = BrowserWindow.getAllWindows()[0];
+          const view = browserWindow?.getBrowserView();
+          return (
+            (await view?.webContents.executeJavaScript(`
+              (() => {
+                const overlay = document.getElementById('__browser_blackbox_inspector_overlay__');
+                const label = overlay?.querySelector('[data-bb-label="true"]');
+                return overlay instanceof HTMLElement
+                  ? {
+                      display: overlay.style.display,
+                      text: label instanceof HTMLElement ? label.textContent : '',
+                    }
+                  : null;
+              })();
+            `)) ?? null
+          );
+        });
+      })
+      .toMatchObject({
+        display: 'block',
+      });
+
     await expect(window.getByTestId('inspection-panel')).toContainText(
       'page.getByTestId("login-submit")',
     );
     await expect(window.getByTestId('inspection-panel')).toContainText('Sign in');
+    await expect(window.locator('.event-stream')).toContainText('Inspection mode enabled.');
   });
 });
 

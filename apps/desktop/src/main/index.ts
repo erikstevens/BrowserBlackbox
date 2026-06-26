@@ -41,6 +41,7 @@ let runtimeHealth: BrowserRuntimeHealth = {
   recentEventCount: 0,
   subscriberCount: 0,
 };
+let inspectionModeEnabled = false;
 let workingCopyStorePromise: Promise<FileBackedSqliteStore> | null = null;
 
 app.commandLine.appendSwitch('remote-debugging-address', REMOTE_DEBUGGING_HOST);
@@ -89,6 +90,10 @@ function registerIpcHandlers(): void {
     return browserSessionManager.getState();
   });
 
+  ipcMain.handle('browser-runtime:get-inspection-mode', async (): Promise<boolean> => {
+    return inspectionModeEnabled;
+  });
+
   ipcMain.handle('browser-runtime:get-diagnostics', async (): Promise<BrowserRuntimeDiagnostics> => {
     return getRuntimeDiagnostics();
   });
@@ -97,6 +102,7 @@ function registerIpcHandlers(): void {
     'browser-runtime:launch',
     async (_event, request: BrowserLaunchRequest): Promise<BrowserRuntimeCommandResult> => {
       lastCapturedRuntimeEventId = null;
+      inspectionModeEnabled = false;
       return browserSessionManager.launch(request);
     },
   );
@@ -109,6 +115,7 @@ function registerIpcHandlers(): void {
   );
 
   ipcMain.handle('browser-runtime:stop', async (): Promise<BrowserRuntimeCommandResult> => {
+    inspectionModeEnabled = false;
     const result = await browserSessionManager.stop();
     lastCapturedRuntimeEventId = null;
     await clearWorkspaceBrowserPane().catch((error) => {
@@ -125,6 +132,27 @@ function registerIpcHandlers(): void {
     });
     return result;
   });
+
+  ipcMain.handle(
+    'browser-runtime:set-inspection-mode',
+    async (_event, enabled: boolean): Promise<boolean> => {
+      inspectionModeEnabled = enabled;
+      await applyInspectionModeToEmbeddedPane(enabled);
+      publishRuntimeEvent({
+        id: randomUUID(),
+        timestamp: new Date().toISOString(),
+        category: 'browser',
+        code: 'inspection.mode.changed',
+        level: 'info',
+        message: enabled ? 'Inspection mode enabled.' : 'Inspection mode disabled.',
+        source: 'electron_shell',
+        data: {
+          enabled,
+        },
+      });
+      return inspectionModeEnabled;
+    },
+  );
 
   ipcMain.handle(
     'workspace:load-working-copy',
@@ -302,6 +330,44 @@ function registerWorkspaceBrowserListeners(view: BrowserView): void {
       return;
     }
 
+    if (message.startsWith('__BB_INSPECT_MODE__')) {
+      try {
+        const payload = JSON.parse(message.slice('__BB_INSPECT_MODE__'.length)) as {
+          enabled?: boolean;
+          timestamp?: string;
+        };
+        if (typeof payload.enabled === 'boolean') {
+          inspectionModeEnabled = payload.enabled;
+          publishRuntimeEvent({
+            id: randomUUID(),
+            timestamp: payload.timestamp ?? new Date().toISOString(),
+            category: 'browser',
+            code: 'inspection.mode.changed',
+            level: 'info',
+            message: payload.enabled
+              ? 'Inspection mode enabled.'
+              : 'Inspection mode disabled.',
+            source: 'electron_shell',
+            data: {
+              enabled: payload.enabled,
+            },
+          });
+        }
+      } catch (error) {
+        publishRuntimeEvent({
+          id: randomUUID(),
+          timestamp: new Date().toISOString(),
+          category: 'console',
+          code: 'inspection.mode.parse_failed',
+          level: 'warn',
+          message: 'Failed to parse embedded inspection mode payload.',
+          source: 'electron_shell',
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+
     const severity = level >= 2 ? 'error' : level === 1 ? 'warn' : 'info';
     publishRuntimeEvent({
       id: randomUUID(),
@@ -325,7 +391,9 @@ function registerWorkspaceBrowserListeners(view: BrowserView): void {
       return;
     }
 
-    void view.webContents.executeJavaScript(buildEmbeddedCaptureScript()).catch((error) => {
+    void view.webContents
+      .executeJavaScript(buildEmbeddedCaptureScript(inspectionModeEnabled))
+      .catch((error) => {
       publishRuntimeEvent({
         id: randomUUID(),
         timestamp: new Date().toISOString(),
@@ -336,7 +404,7 @@ function registerWorkspaceBrowserListeners(view: BrowserView): void {
         source: 'electron_shell',
         detail: error instanceof Error ? error.message : String(error),
       });
-    });
+      });
   });
 
   view.webContents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
@@ -604,10 +672,32 @@ async function getWorkingCopyStore(): Promise<FileBackedSqliteStore> {
   return workingCopyStorePromise;
 }
 
-function buildEmbeddedCaptureScript(): string {
+async function applyInspectionModeToEmbeddedPane(enabled: boolean): Promise<void> {
+  if (workspaceBrowserView === null) {
+    return;
+  }
+
+  const currentUrl = workspaceBrowserView.webContents.getURL();
+  if (!currentUrl.startsWith('http://') && !currentUrl.startsWith('https://')) {
+    return;
+  }
+
+  await workspaceBrowserView.webContents.executeJavaScript(buildInspectionModeScript(enabled));
+}
+
+function buildInspectionModeScript(enabled: boolean): string {
+  return `
+    (() => {
+      window.__browserBlackboxSetInspectMode?.(${enabled ? 'true' : 'false'}, { silent: true });
+    })();
+  `;
+}
+
+function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): string {
   return `
     (() => {
       if (window.__browserBlackboxCaptureInstalled) {
+        window.__browserBlackboxSetInspectMode?.(${initialInspectionModeEnabled ? 'true' : 'false'});
         return;
       }
       window.__browserBlackboxCaptureInstalled = true;
@@ -623,10 +713,19 @@ function buildEmbeddedCaptureScript(): string {
           inspection,
         }));
       };
+      const emitInspectionMode = (enabled) => {
+        console.log('__BB_INSPECT_MODE__' + JSON.stringify({
+          timestamp: new Date().toISOString(),
+          enabled,
+        }));
+      };
+      const overlayId = '__browser_blackbox_inspector_overlay__';
       const normalizeText = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
       const escapeDouble = (value) => String(value).replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
       const escapeSingle = (value) => String(value).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'");
       const selectorSchemaVersion = '${domainVersions.domainSchemaVersion}';
+      let inspectionModeEnabled = false;
+      let selectedElement = null;
       const resolveLabel = (element) => {
         if ('labels' in element && element.labels && element.labels.length > 0) {
           return normalizeText(element.labels[0]?.textContent ?? '');
@@ -853,12 +952,59 @@ function buildEmbeddedCaptureScript(): string {
           })),
         };
       };
+      const ensureOverlay = () => {
+        let overlay = document.getElementById(overlayId);
+        if (overlay instanceof HTMLDivElement) {
+          return overlay;
+        }
+        overlay = document.createElement('div');
+        overlay.id = overlayId;
+        overlay.setAttribute('aria-hidden', 'true');
+        overlay.style.position = 'fixed';
+        overlay.style.inset = '0';
+        overlay.style.pointerEvents = 'none';
+        overlay.style.zIndex = '2147483647';
+        overlay.style.display = 'none';
+        overlay.innerHTML = [
+          '<div data-bb-box="true" style="position:fixed;border:2px solid rgba(231,111,81,0.95);background:rgba(231,111,81,0.08);box-shadow:0 0 0 1px rgba(15,23,32,0.85);"></div>',
+          '<div data-bb-label="true" style="position:fixed;max-width:420px;padding:8px 12px;border-radius:12px;background:rgba(15,23,32,0.96);color:#f4f1ea;font:12px/1.45 IBM Plex Sans,system-ui,sans-serif;letter-spacing:0.04em;box-shadow:0 12px 32px rgba(0,0,0,0.28);"></div>',
+        ].join('');
+        document.documentElement.appendChild(overlay);
+        return overlay;
+      };
+      const hideOverlay = () => {
+        const overlay = ensureOverlay();
+        overlay.style.display = 'none';
+      };
+      const renderOverlay = (element, inspection, modeLabel) => {
+        const overlay = ensureOverlay();
+        const box = overlay.querySelector('[data-bb-box="true"]');
+        const label = overlay.querySelector('[data-bb-label="true"]');
+        if (!(box instanceof HTMLDivElement) || !(label instanceof HTMLDivElement)) {
+          return;
+        }
+        const rect = element.getBoundingClientRect();
+        overlay.style.display = 'block';
+        box.style.left = rect.left + 'px';
+        box.style.top = rect.top + 'px';
+        box.style.width = Math.max(rect.width, 0) + 'px';
+        box.style.height = Math.max(rect.height, 0) + 'px';
+        label.textContent = [
+          modeLabel,
+          inspection.recommendations.primary.locator,
+          inspection.recommendations.primary.stability + ' ' + inspection.recommendations.primary.stabilityScore + '/100',
+        ].join(' · ');
+        const labelTop = rect.top > 52 ? rect.top - 42 : rect.bottom + 10;
+        const labelLeft = Math.min(rect.left, Math.max(12, window.innerWidth - 432));
+        label.style.left = labelLeft + 'px';
+        label.style.top = Math.max(12, labelTop) + 'px';
+      };
       const publishInspection = (element) => {
         if (!(element instanceof HTMLElement)) return;
         const recommendations = selectPrimaryAndFallbacks(buildLocatorCandidates(element));
         const rootNode = element.getRootNode();
         const labelText = resolveLabel(element);
-        emitInspection({
+        const inspection = {
           schemaVersion: selectorSchemaVersion,
           target: {
             tagName: element.tagName.toLowerCase(),
@@ -880,19 +1026,47 @@ function buildEmbeddedCaptureScript(): string {
             obscured: isObscured(element),
           },
           relatedRequestIds: [],
-        });
+        };
+        renderOverlay(element, inspection, selectedElement === element ? 'Selected' : 'Inspecting');
+        emitInspection(inspection);
       };
-      const updateInspectionOutline = (element) => {
-        const existing = document.querySelector('[data-browser-blackbox-selected="true"]');
-        if (existing instanceof HTMLElement) {
-          existing.style.outline = '';
-          existing.style.outlineOffset = '';
-          existing.removeAttribute('data-browser-blackbox-selected');
+      const isInspectableTarget = (target) => {
+        return target instanceof HTMLElement && target.id !== overlayId && !target.closest('#' + overlayId);
+      };
+      const handleInspectHover = (event) => {
+        if (!inspectionModeEnabled) {
+          return;
         }
-        if (!(element instanceof HTMLElement)) return;
-        element.setAttribute('data-browser-blackbox-selected', 'true');
-        element.style.outline = '2px solid rgba(231, 111, 81, 0.9)';
-        element.style.outlineOffset = '2px';
+        const target = event.target;
+        if (!isInspectableTarget(target)) return;
+        publishInspection(target);
+      };
+      const handleInspectClick = (event) => {
+        if (!inspectionModeEnabled) {
+          return;
+        }
+        const target = event.target;
+        if (!isInspectableTarget(target)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        selectedElement = target;
+        publishInspection(target);
+      };
+      const handleInspectKeydown = (event) => {
+        if (event.key === 'Escape' && inspectionModeEnabled) {
+          window.__browserBlackboxSetInspectMode?.(false);
+        }
+      };
+      window.__browserBlackboxSetInspectMode = (enabled, options = {}) => {
+        inspectionModeEnabled = enabled;
+        selectedElement = enabled ? selectedElement : null;
+        document.body.style.cursor = enabled ? 'crosshair' : '';
+        if (!enabled) {
+          hideOverlay();
+        }
+        if (options.silent !== true) {
+          emitInspectionMode(enabled);
+        }
       };
       const selectorFor = (element) => {
         const testId = element.getAttribute('data-testid') || element.getAttribute('data-test');
@@ -943,17 +1117,10 @@ function buildEmbeddedCaptureScript(): string {
           sensitive,
         });
       }, true);
-      document.addEventListener('click', (event) => {
-        if (!event.altKey || !event.shiftKey) {
-          return;
-        }
-        const target = event.target;
-        if (!(target instanceof HTMLElement)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        updateInspectionOutline(target);
-        publishInspection(target);
-      }, true);
+      document.addEventListener('mousemove', handleInspectHover, true);
+      document.addEventListener('click', handleInspectClick, true);
+      document.addEventListener('keydown', handleInspectKeydown, true);
+      window.__browserBlackboxSetInspectMode?.(${initialInspectionModeEnabled ? 'true' : 'false'});
     })();
   `;
 }

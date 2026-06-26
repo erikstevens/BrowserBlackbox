@@ -56,6 +56,7 @@ export function App() {
   const [pendingAction, setPendingAction] = useState<
     'launch' | 'stop' | 'replay' | null
   >(null);
+  const [inspectionModeEnabled, setInspectionModeEnabled] = useState(false);
   const [persistenceReady, setPersistenceReady] = useState(false);
   const selectedRecordedStep = getSelectedRecordedStep(recordingSession);
   const { canUndo, canRedo } = getRecordingUndoAvailability(recordingSession);
@@ -75,6 +76,12 @@ export function App() {
         setPersistenceReady(true);
       });
   }, [hydrateWorkingCopySnapshot]);
+
+  useEffect(() => {
+    void window.desktopShell.getInspectionMode().then(setInspectionModeEnabled).catch(() => {
+      setInspectionModeEnabled(false);
+    });
+  }, []);
 
   useEffect(() => {
     void window.desktopShell
@@ -98,6 +105,21 @@ export function App() {
 
     return unsubscribe;
   }, [pushRuntimeUpdate, setBrowserRuntime, setRuntimeDiagnostics]);
+
+  useEffect(() => {
+    const latestInspectionModeEvent = runtimeEvents.find(
+      (event) => event.code === 'inspection.mode.changed',
+    );
+    if (latestInspectionModeEvent && typeof latestInspectionModeEvent.data?.enabled === 'boolean') {
+      setInspectionModeEnabled(latestInspectionModeEvent.data.enabled);
+    }
+  }, [runtimeEvents]);
+
+  useEffect(() => {
+    if (browserRuntime.phase !== 'running') {
+      setInspectionModeEnabled(false);
+    }
+  }, [browserRuntime.phase]);
 
   useEffect(() => {
     if (!persistenceReady) {
@@ -174,6 +196,11 @@ export function App() {
     } finally {
       setPendingAction(null);
     }
+  }
+
+  async function toggleInspectionMode(): Promise<void> {
+    const nextEnabled = await window.desktopShell.setInspectionMode(!inspectionModeEnabled);
+    setInspectionModeEnabled(nextEnabled);
   }
 
   return (
@@ -316,7 +343,25 @@ export function App() {
           </article>
 
           <article className="panel full-width-panel">
-            <p className="section-label">Inspector lane</p>
+            <div className="panel-header">
+              <div>
+                <p className="section-label">Inspector lane</p>
+                <p className="panel-copy">
+                  Turn on inspect mode to hover live elements in the embedded browser,
+                  preview the active locator overlay, and click once to pin the current
+                  target into the review lane.
+                </p>
+              </div>
+              <div className="recording-toolbar">
+                <button
+                  className={`button ${inspectionModeEnabled ? 'button-danger' : 'button-secondary'}`}
+                  disabled={browserRuntime.phase !== 'running' || pendingAction !== null}
+                  onClick={() => void toggleInspectionMode()}
+                >
+                  {inspectionModeEnabled ? 'Exit inspect mode' : 'Enter inspect mode'}
+                </button>
+              </div>
+            </div>
             {currentInspection ? (
               <div className="inspection-grid" data-testid="inspection-panel">
                 <div className="inspection-card">
@@ -327,8 +372,9 @@ export function App() {
                       : ''}
                   </p>
                   <p className="step-summary">
-                    Hold <strong>Alt</strong> + <strong>Shift</strong> and click an element
-                    inside the embedded browser to refresh this panel.
+                    {inspectionModeEnabled
+                      ? 'Inspect mode is live. Move across the embedded browser to update the overlay, then click an element to pin this panel.'
+                      : 'Enable inspect mode, then hover and click inside the embedded browser to refresh this panel.'}
                   </p>
                   <div className="step-review-tags">
                     <span className="review-tag">
@@ -426,8 +472,8 @@ export function App() {
               </div>
             ) : (
               <p className="empty-state" data-testid="inspection-panel">
-                Launch a session, then hold Alt + Shift and click an element inside the
-                embedded browser to inspect its selector metadata.
+                Launch a session, enable inspect mode, then hover and click an element
+                inside the embedded browser to inspect its selector metadata.
               </p>
             )}
           </article>

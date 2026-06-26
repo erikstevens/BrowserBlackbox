@@ -5,8 +5,10 @@ const desktopShellApi: DesktopShellApi = {
   version: '0.1.0',
   getBrowserRuntimeState: () => ipcRenderer.invoke('browser-runtime:get-state'),
   getBrowserRuntimeDiagnostics: () => ipcRenderer.invoke('browser-runtime:get-diagnostics'),
+  getInspectionMode: () => ipcRenderer.invoke('browser-runtime:get-inspection-mode'),
   launchBrowserSession: (request) => ipcRenderer.invoke('browser-runtime:launch', request),
   runReplay: (request) => ipcRenderer.invoke('browser-runtime:replay', request),
+  setInspectionMode: (enabled) => ipcRenderer.invoke('browser-runtime:set-inspection-mode', enabled),
   stopBrowserSession: () => ipcRenderer.invoke('browser-runtime:stop'),
   loadWorkingCopySnapshot: () => ipcRenderer.invoke('workspace:load-working-copy'),
   saveWorkingCopySnapshot: (snapshot) =>
