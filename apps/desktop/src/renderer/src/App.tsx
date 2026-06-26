@@ -456,6 +456,22 @@ export function App() {
                         This interactive target does not expose a stable accessible name.
                       </p>
                     ) : null}
+                    {currentInspection.stableParent ? (
+                      <div className="inspection-reasoning">
+                        <p className="section-label">Stable parent anchor</p>
+                        <p className="inspection-reason">
+                          {currentInspection.stableParent.locator}
+                        </p>
+                        <p className="inspection-reason">
+                          Strategy: {currentInspection.stableParent.strategy}
+                        </p>
+                        {currentInspection.stableParent.reasoning.map((reason) => (
+                          <p className="inspection-reason" key={reason}>
+                            {reason}
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
                     <div className="inspection-reasoning">
                       <p className="section-label">Primary reasoning</p>
                       {currentInspection.recommendations.primary.reasoning.map((reason) => (

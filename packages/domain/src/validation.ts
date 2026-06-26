@@ -514,6 +514,25 @@ function validateInspectionMetadata(
 
   validateLocatorRecommendation(value.recommendations, issues);
 
+  if (value.stableParent !== undefined) {
+    if (!isRecord(value.stableParent)) {
+      issues.push('stableParent must be an object when provided');
+    } else {
+      if (!isNonEmptyString(value.stableParent.locator)) {
+        issues.push('stableParent.locator must be a non-empty string');
+      }
+      validateLiteral(
+        issues,
+        value.stableParent.strategy,
+        'stableParent.strategy',
+        ['test-id', 'role-name', 'label', 'semantic-attribute', 'text', 'css', 'xpath'] as const,
+      );
+      if (!isStringArray(value.stableParent.reasoning) || value.stableParent.reasoning.length === 0) {
+        issues.push('stableParent.reasoning must contain at least one string');
+      }
+    }
+  }
+
   if (!isRecord(value.context)) {
     issues.push('context must be an object');
   } else {

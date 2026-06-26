@@ -220,6 +220,51 @@ test.describe('desktop acceptance', () => {
       'ID looks auto-generated or unstable.',
     );
   });
+
+  test('uses a stable parent anchor for repeated container targets', async () => {
+    await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
+    await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
+    await expect(statusRowPill(window, 'Phase')).toContainText('running');
+    await window.getByRole('button', { name: 'Enter inspect mode' }).click();
+
+    await electronApp.evaluate(async ({ BrowserWindow }) => {
+      const browserWindow = BrowserWindow.getAllWindows()[0];
+      const view = browserWindow?.getBrowserView();
+      await view?.webContents.executeJavaScript(`
+        (() => {
+          const target = document.querySelector('[data-testid="order-card-2"] button');
+          if (!(target instanceof HTMLElement)) {
+            throw new Error('Repeated container target was not found.');
+          }
+          target.dispatchEvent(new MouseEvent('mousemove', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 20,
+            clientY: 20,
+          }));
+          target.dispatchEvent(new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 20,
+            clientY: 20,
+          }));
+        })();
+      `);
+    });
+
+    await expect(window.getByTestId('inspection-panel')).toContainText(
+      'page.getByTestId("order-card-2").getByRole("button", { name: "Edit" })',
+    );
+    await expect(window.getByTestId('inspection-panel')).toContainText(
+      'Stable parent anchor',
+    );
+    await expect(window.getByTestId('inspection-panel')).toContainText(
+      'page.getByTestId("order-card-2")',
+    );
+    await expect(window.getByTestId('inspection-panel')).toContainText(
+      'Repeated child target is scoped to the nearest stable parent container.',
+    );
+  });
 });
 
 async function createFixtureServer(): Promise<FixtureServer> {
@@ -245,6 +290,14 @@ async function createFixtureServer(): Promise<FixtureServer> {
             <input id="fixture-email" name="email" type="email" placeholder="qa@example.test" />
             <button data-testid="login-submit" type="button">Sign in</button>
             <button id="btn__12345678" type="button">Order 42 at 12:34</button>
+            <section data-testid="order-card-1" aria-label="Order card 1">
+              <h2>Order 1</h2>
+              <button type="button">Edit</button>
+            </section>
+            <section data-testid="order-card-2" aria-label="Order card 2">
+              <h2>Order 2</h2>
+              <button type="button">Edit</button>
+            </section>
           </main>
           <script>
             console.log('fixture console ready');

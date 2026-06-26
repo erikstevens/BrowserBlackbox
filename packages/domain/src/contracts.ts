@@ -191,6 +191,11 @@ export type InspectionMetadata = {
       | 'other';
   };
   recommendations: LocatorRecommendation;
+  stableParent?: {
+    locator: string;
+    strategy: SelectorStrategy;
+    reasoning: string[];
+  };
   context: {
     testId?: string;
     iframeDepth: number;

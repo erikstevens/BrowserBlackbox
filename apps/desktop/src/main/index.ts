@@ -929,6 +929,13 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
           input.fallback,
         );
       };
+      const extractLocatorMethodCall = (locator) => {
+        const pagePrefix = 'page.';
+        if (!locator.startsWith(pagePrefix)) {
+          return null;
+        }
+        return locator.slice(pagePrefix.length);
+      };
       const buildLocatorCandidates = (element) => {
         const candidates = [];
         const testId = element.getAttribute('data-testid') || element.getAttribute('data-test');
@@ -1061,6 +1068,64 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
           })
           .slice(0, 4);
       };
+      const buildStableParentRecommendation = (element) => {
+        let current = element.parentElement;
+        while (current) {
+          const currentRole = resolveRole(current);
+          const currentName = resolveName(current);
+          const parentCandidates = buildLocatorCandidates(current).filter(
+            (candidate) =>
+              candidate.uniqueness === 'unique' &&
+              candidate.stabilityScore >= 72 &&
+              candidate.strategy !== 'text',
+          );
+          const preferred = parentCandidates[0];
+          if (
+            preferred &&
+            (
+              current.hasAttribute('data-testid') ||
+              current.hasAttribute('data-test') ||
+              ['article', 'section', 'form', 'li', 'tr', 'fieldset', 'dialog'].includes(
+                current.tagName.toLowerCase(),
+              ) ||
+              (currentRole && currentName)
+            )
+          ) {
+            return {
+              locator: preferred.locator,
+              strategy: preferred.strategy,
+              reasoning: [
+                'Nearest parent container is unique enough to anchor a chained locator.',
+                ...preferred.reasoning,
+              ],
+            };
+          }
+          current = current.parentElement;
+        }
+        return undefined;
+      };
+      const buildChainedCandidate = (stableParent, childCandidate) => {
+        const childMethodCall = extractLocatorMethodCall(childCandidate.locator);
+        if (!stableParent || !childMethodCall || childCandidate.uniqueness === 'unique') {
+          return undefined;
+        }
+        const baseScore = Math.min(
+          97,
+          Math.max(childCandidate.stabilityScore + 18, stableParent.strategy === 'test-id' ? 94 : 88),
+        );
+        return buildCandidate(
+          stableParent.locator + '.' + childMethodCall,
+          childCandidate.strategy,
+          'unique',
+          baseScore,
+          [
+            'Repeated child target is scoped to the nearest stable parent container.',
+            ...stableParent.reasoning,
+            ...childCandidate.reasoning,
+          ],
+          false,
+        );
+      };
       const selectPrimaryAndFallbacks = (candidates) => {
         if (candidates.length === 0) {
           const fallback = buildCandidate(
@@ -1151,7 +1216,22 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
       };
       const publishInspection = (element) => {
         if (!(element instanceof HTMLElement)) return;
-        const recommendations = selectPrimaryAndFallbacks(buildLocatorCandidates(element));
+        const stableParent = buildStableParentRecommendation(element);
+        const baseCandidates = buildLocatorCandidates(element);
+        const chainedCandidates = stableParent
+          ? baseCandidates
+              .map((candidate) => buildChainedCandidate(stableParent, candidate))
+              .filter((candidate) => candidate !== undefined)
+          : [];
+        const recommendations = selectPrimaryAndFallbacks(
+          [...chainedCandidates, ...baseCandidates].sort((left, right) => {
+            return (
+              strategyPriority[left.strategy] - strategyPriority[right.strategy] ||
+              right.stabilityScore - left.stabilityScore ||
+              left.locator.localeCompare(right.locator)
+            );
+          }),
+        );
         const rootNode = element.getRootNode();
         const labelText = resolveLabel(element);
         const frameContext = resolveFrameContext(element.ownerDocument.defaultView);
@@ -1167,6 +1247,7 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
             interactiveType: resolveInteractiveType(element),
           },
           recommendations,
+          stableParent,
           context: {
             testId: element.getAttribute('data-testid') || element.getAttribute('data-test') || undefined,
             iframeDepth: frameContext.iframeDepth,

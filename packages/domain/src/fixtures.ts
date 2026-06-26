@@ -71,6 +71,11 @@ export const inspectionMetadataFixture: InspectionMetadata = {
       },
     ],
   },
+  stableParent: {
+    locator: 'page.getByTestId("login-form")',
+    strategy: 'test-id',
+    reasoning: ['Parent form exposes a stable test contract attribute.'],
+  },
   context: {
     testId: 'login-submit',
     iframeDepth: 0,
