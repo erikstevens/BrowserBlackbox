@@ -2,7 +2,9 @@ import { create } from 'zustand';
 import {
   type BrowserContextSnapshot,
   type DiagnosisResult,
+  type InspectionMetadata,
   parseDiagnosisResult,
+  parseInspectionMetadata,
   parseRequestResponseCapture,
   parseTimelineEvent,
   checkpointFixture,
@@ -59,6 +61,7 @@ type WorkspaceState = {
   browserRuntime: BrowserRuntimeState;
   runtimeHealth: BrowserRuntimeHealth;
   runtimeEvents: BrowserRuntimeEvent[];
+  currentInspection: InspectionMetadata | null;
   captures: RequestResponseCapture[];
   timeline: TimelineEvent[];
   diagnosis: DiagnosisResult | null;
@@ -115,6 +118,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
       subscriberCount: 0,
     },
     runtimeEvents: [],
+    currentInspection: null,
     captures: [],
     timeline: [],
     diagnosis: null,
@@ -133,6 +137,9 @@ export function createInitialWorkspaceState(): WorkspaceState {
           browserRuntime: diagnostics.state,
           runtimeHealth: diagnostics.health,
           runtimeEvents: diagnostics.recentEvents,
+          currentInspection: extractLatestInspectionFromRuntimeEvents(
+            diagnostics.recentEvents,
+          ),
           captures: evidence.captures,
           timeline: evidence.timeline,
           diagnosis: evidence.diagnosis,
@@ -154,6 +161,9 @@ export function createInitialWorkspaceState(): WorkspaceState {
           browserRuntime: update.state,
           runtimeHealth: update.health,
           runtimeEvents,
+          currentInspection:
+            parseInspectionMetadataFromRuntimeEvent(update.event) ??
+            state.currentInspection,
           captures: evidence.captures,
           timeline: evidence.timeline,
           diagnosis: evidence.diagnosis,
@@ -257,6 +267,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
           targetUrl,
           workingCopy: metadata,
           captures: [],
+          currentInspection: null,
           timeline: [],
           diagnosis: null,
           recordingSession: replaceRecordingSession({
@@ -546,6 +557,33 @@ function createInsertedStep(
       matchMode: 'exact',
     },
   };
+}
+
+function extractLatestInspectionFromRuntimeEvents(
+  runtimeEvents: BrowserRuntimeEvent[],
+): InspectionMetadata | null {
+  for (const event of runtimeEvents) {
+    const inspection = parseInspectionMetadataFromRuntimeEvent(event);
+    if (inspection) {
+      return inspection;
+    }
+  }
+
+  return null;
+}
+
+function parseInspectionMetadataFromRuntimeEvent(
+  event: BrowserRuntimeEvent,
+): InspectionMetadata | null {
+  if (event.code !== 'inspection.target.selected') {
+    return null;
+  }
+
+  try {
+    return parseInspectionMetadata(event.data?.inspection);
+  } catch {
+    return null;
+  }
 }
 
 function maybeCaptureRecordedStep(

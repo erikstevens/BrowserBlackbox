@@ -11,6 +11,7 @@ export function App() {
   const browserRuntime = useWorkspaceStore((state) => state.browserRuntime);
   const runtimeHealth = useWorkspaceStore((state) => state.runtimeHealth);
   const runtimeEvents = useWorkspaceStore((state) => state.runtimeEvents);
+  const currentInspection = useWorkspaceStore((state) => state.currentInspection);
   const captures = useWorkspaceStore((state) => state.captures);
   const timeline = useWorkspaceStore((state) => state.timeline);
   const diagnosis = useWorkspaceStore((state) => state.diagnosis);
@@ -312,6 +313,123 @@ export function App() {
                   'No deterministic diagnosis has been derived from the current evidence yet.'}
               </p>
             </div>
+          </article>
+
+          <article className="panel full-width-panel">
+            <p className="section-label">Inspector lane</p>
+            {currentInspection ? (
+              <div className="inspection-grid" data-testid="inspection-panel">
+                <div className="inspection-card">
+                  <p className="inspection-title">
+                    {currentInspection.target.tagName}
+                    {currentInspection.target.accessibleName
+                      ? ` · ${currentInspection.target.accessibleName}`
+                      : ''}
+                  </p>
+                  <p className="step-summary">
+                    Hold <strong>Alt</strong> + <strong>Shift</strong> and click an element
+                    inside the embedded browser to refresh this panel.
+                  </p>
+                  <div className="step-review-tags">
+                    <span className="review-tag">
+                      {currentInspection.target.interactiveType}
+                    </span>
+                    {currentInspection.target.role ? (
+                      <span className="review-tag">{currentInspection.target.role}</span>
+                    ) : null}
+                    {currentInspection.context.inShadowDom ? (
+                      <span className="review-tag">shadow dom</span>
+                    ) : null}
+                    {currentInspection.context.iframeDepth > 0 ? (
+                      <span className="review-tag">
+                        iframe depth {currentInspection.context.iframeDepth}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="runtime-status">
+                    <p className="status-row">
+                      <span className="status-label">Primary locator</span>
+                      <span className="status-value">
+                        {currentInspection.recommendations.primary.locator}
+                      </span>
+                    </p>
+                    <p className="status-row">
+                      <span className="status-label">Stability</span>
+                      <span className="status-value">
+                        {currentInspection.recommendations.primary.stability} ·{' '}
+                        {currentInspection.recommendations.primary.stabilityScore}/100
+                      </span>
+                    </p>
+                    <p className="status-row">
+                      <span className="status-label">Test ID</span>
+                      <span className="status-value">
+                        {currentInspection.context.testId ?? 'None'}
+                      </span>
+                    </p>
+                    <p className="status-row">
+                      <span className="status-label">Visible / enabled / obscured</span>
+                      <span className="status-value">
+                        {formatBoolean(currentInspection.context.visible)} /{' '}
+                        {formatBoolean(currentInspection.context.enabled)} /{' '}
+                        {formatBoolean(currentInspection.context.obscured)}
+                      </span>
+                    </p>
+                    {currentInspection.target.labelText ? (
+                      <p className="status-row">
+                        <span className="status-label">Label</span>
+                        <span className="status-value">
+                          {currentInspection.target.labelText}
+                        </span>
+                      </p>
+                    ) : null}
+                    {currentInspection.target.textContent ? (
+                      <p className="status-row">
+                        <span className="status-label">Text</span>
+                        <span className="status-value">
+                          {currentInspection.target.textContent}
+                        </span>
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="inspection-card">
+                  <p className="section-label">Fallback locators</p>
+                  {currentInspection.recommendations.fallbacks.length === 0 ? (
+                    <p className="empty-state">
+                      No fallback locator candidates were derived for the current target.
+                    </p>
+                  ) : (
+                    <div className="checkpoint-list">
+                      {currentInspection.recommendations.fallbacks.map((candidate) => (
+                        <div className="step-review-card" key={candidate.locator}>
+                          <div className="step-review-header">
+                            <span className="step-index">{candidate.strategy}</span>
+                            <span className="status-value">
+                              {candidate.stabilityScore}/100
+                            </span>
+                          </div>
+                          <p className="step-summary">{candidate.locator}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="section-label inspection-subheading">Attributes</p>
+                  <div className="inspection-attributes">
+                    {Object.entries(currentInspection.target.attributes).map(([key, value]) => (
+                      <div className="review-tag" key={key}>
+                        {key}={value}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="empty-state" data-testid="inspection-panel">
+                Launch a session, then hold Alt + Shift and click an element inside the
+                embedded browser to inspect its selector metadata.
+              </p>
+            )}
           </article>
 
           <article className="panel full-width-panel">
@@ -718,6 +836,10 @@ function formatTimestamp(timestamp: string): string {
   });
 }
 
+function formatBoolean(value: boolean): string {
+  return value ? 'yes' : 'no';
+}
+
 function describeRecordedStep(step: RecordedStep): string {
   if (step.kind === 'assertion') {
     switch (step.assertion.kind) {
@@ -750,6 +872,7 @@ function describeRecordedStep(step: RecordedStep): string {
       return step.action.type;
   }
 }
+
 
 function ActionEditor(props: {
   step: Extract<RecordedStep, { kind: 'action' }>;

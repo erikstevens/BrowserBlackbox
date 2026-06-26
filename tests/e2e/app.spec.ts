@@ -113,6 +113,36 @@ test.describe('desktop acceptance', () => {
       'Replay completed 1 step(s).',
     );
   });
+
+  test('surfaces selected-element inspection metadata from the embedded browser', async () => {
+    await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
+    await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
+    await expect(statusRowPill(window, 'Phase')).toContainText('running');
+
+    await electronApp.evaluate(async ({ BrowserWindow }) => {
+      const browserWindow = BrowserWindow.getAllWindows()[0];
+      const view = browserWindow?.getBrowserView();
+      await view?.webContents.executeJavaScript(`
+        (() => {
+          const target = document.querySelector('[data-testid="login-submit"]');
+          if (!(target instanceof HTMLElement)) {
+            throw new Error('Inspection target was not found in the fixture page.');
+          }
+          target.dispatchEvent(new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            altKey: true,
+            shiftKey: true,
+          }));
+        })();
+      `);
+    });
+
+    await expect(window.getByTestId('inspection-panel')).toContainText(
+      'page.getByTestId("login-submit")',
+    );
+    await expect(window.getByTestId('inspection-panel')).toContainText('Sign in');
+  });
 });
 
 async function createFixtureServer(): Promise<FixtureServer> {
@@ -134,6 +164,9 @@ async function createFixtureServer(): Promise<FixtureServer> {
           <main>
             <h1>Fixture Site</h1>
             <p id="fixture-status">booting</p>
+            <label for="fixture-email">Email</label>
+            <input id="fixture-email" name="email" type="email" placeholder="qa@example.test" />
+            <button data-testid="login-submit" type="button">Sign in</button>
           </main>
           <script>
             console.log('fixture console ready');

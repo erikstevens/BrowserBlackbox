@@ -504,6 +504,92 @@ describe('workspace recording review state', () => {
     });
   });
 
+  it('tracks the latest inspected element from runtime events', () => {
+    const state = useWorkspaceStore.getState();
+    state.beginRuntimeCapture('https://example.test/login', 'session-live-001');
+
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:18:00.000Z',
+        lastError: null,
+        recentEventCount: 1,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'inspection-001',
+        timestamp: '2026-06-25T12:18:00.000Z',
+        category: 'browser',
+        code: 'inspection.target.selected',
+        level: 'info',
+        message: 'Selected button for inspection.',
+        source: 'electron_shell',
+        data: {
+          inspection: {
+            schemaVersion: '1.0.0',
+            target: {
+              tagName: 'button',
+              textContent: 'Sign in',
+              attributes: {
+                'data-testid': 'login-submit',
+                type: 'submit',
+              },
+              role: 'button',
+              accessibleName: 'Sign in',
+              interactiveType: 'button',
+            },
+            recommendations: {
+              primary: {
+                schemaVersion: '1.0.0',
+                locator: 'page.getByTestId("login-submit")',
+                strategy: 'test-id',
+                uniqueness: 'unique',
+                stability: 'excellent',
+                stabilityScore: 99,
+                reasoning: ['Stable explicit test contract attribute.'],
+                fallback: false,
+              },
+              fallbacks: [],
+            },
+            context: {
+              testId: 'login-submit',
+              iframeDepth: 0,
+              inShadowDom: false,
+              visible: true,
+              enabled: true,
+              obscured: false,
+            },
+            relatedRequestIds: [],
+          },
+        },
+      },
+    });
+
+    expect(useWorkspaceStore.getState().currentInspection).toMatchObject({
+      context: {
+        testId: 'login-submit',
+      },
+      recommendations: {
+        primary: {
+          locator: 'page.getByTestId("login-submit")',
+        },
+      },
+      target: {
+        accessibleName: 'Sign in',
+        tagName: 'button',
+      },
+    });
+  });
+
   it('derives failed-assertion diagnosis from blocking request and console evidence', () => {
     const state = useWorkspaceStore.getState();
     state.beginRuntimeCapture('https://example.test/login', 'session-live-001');
