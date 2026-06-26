@@ -132,21 +132,24 @@ export function createInitialWorkspaceState(): WorkspaceState {
     setRuntimeDiagnostics: (diagnostics) =>
       useWorkspaceStore.setState((state) => {
         const evidence = buildEvidenceFromRuntimeEvents(diagnostics.recentEvents);
+        const recordingSession = maybeCaptureRecordedStepsFromRuntimeEvents(
+          state.recordingSession,
+          diagnostics.recentEvents,
+        );
 
         return {
           browserRuntime: diagnostics.state,
           runtimeHealth: diagnostics.health,
           runtimeEvents: diagnostics.recentEvents,
-          currentInspection: extractLatestInspectionFromRuntimeEvents(
-            diagnostics.recentEvents,
+          currentInspection: enrichInspectionWithRelatedRequests(
+            extractLatestInspectionFromRuntimeEvents(diagnostics.recentEvents),
+            recordingSession,
+            evidence.captures,
           ),
           captures: evidence.captures,
           timeline: evidence.timeline,
           diagnosis: evidence.diagnosis,
-          recordingSession: maybeCaptureRecordedStepsFromRuntimeEvents(
-            state.recordingSession,
-            diagnostics.recentEvents,
-          ),
+          recordingSession,
         };
       }),
     pushRuntimeUpdate: (update) =>
@@ -156,18 +159,21 @@ export function createInitialWorkspaceState(): WorkspaceState {
           ...state.runtimeEvents.filter((event) => event.id !== update.event.id),
         ].slice(0, 80);
         const evidence = buildEvidenceFromRuntimeEvents(runtimeEvents);
+        const recordingSession = maybeCaptureRecordedStep(state.recordingSession, update.event);
 
         return {
           browserRuntime: update.state,
           runtimeHealth: update.health,
           runtimeEvents,
-          currentInspection:
-            parseInspectionMetadataFromRuntimeEvent(update.event) ??
-            state.currentInspection,
+          currentInspection: enrichInspectionWithRelatedRequests(
+            parseInspectionMetadataFromRuntimeEvent(update.event) ?? state.currentInspection,
+            recordingSession,
+            evidence.captures,
+          ),
           captures: evidence.captures,
           timeline: evidence.timeline,
           diagnosis: evidence.diagnosis,
-          recordingSession: maybeCaptureRecordedStep(state.recordingSession, update.event),
+          recordingSession,
         };
       }),
     selectRecordedStep: (stepId) =>
@@ -584,6 +590,89 @@ function parseInspectionMetadataFromRuntimeEvent(
   } catch {
     return null;
   }
+}
+
+function enrichInspectionWithRelatedRequests(
+  inspection: InspectionMetadata | null,
+  recordingSession: RecordingSession,
+  captures: RequestResponseCapture[],
+): InspectionMetadata | null {
+  if (!inspection) {
+    return null;
+  }
+
+  const selectorKeys = new Set<string>();
+  const candidates = [
+    inspection.recommendations.primary.locator,
+    ...inspection.recommendations.fallbacks.map((candidate) => candidate.locator),
+  ];
+
+  for (const locator of candidates) {
+    selectorKeys.add(locator);
+    const childLocator = extractChildLocator(locator);
+    if (childLocator) {
+      selectorKeys.add(childLocator);
+    }
+  }
+
+  const matchedStepIds = new Set(
+    recordingSession.present.steps
+      .filter((step) => {
+        const selector = getRecordedStepSelector(step);
+        return selector ? selectorKeys.has(selector) : false;
+      })
+      .map((step) => step.id),
+  );
+
+  const relatedRequestIds = captures
+    .filter((capture) => capture.triggeringStepId && matchedStepIds.has(capture.triggeringStepId))
+    .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
+    .map((capture) => capture.id);
+
+  return {
+    ...inspection,
+    relatedRequestIds,
+  };
+}
+
+function getRecordedStepSelector(step: RecordedStep): string | null {
+  if (step.kind === 'action') {
+    switch (step.action.type) {
+      case 'click':
+      case 'double-click':
+      case 'fill':
+      case 'select-option':
+      case 'set-checked':
+      case 'upload-file':
+        return step.action.selector;
+      case 'press-key':
+        return step.action.selector ?? null;
+      default:
+        return null;
+    }
+  }
+
+  switch (step.assertion.kind) {
+    case 'element-visible':
+    case 'element-hidden':
+    case 'element-enabled':
+    case 'element-contains-text':
+      return step.assertion.selector;
+    default:
+      return null;
+  }
+}
+
+function extractChildLocator(locator: string): string | null {
+  const lastGetBy = locator.lastIndexOf('.getBy');
+  const lastLocator = locator.lastIndexOf('.locator(');
+  const lastSegmentIndex = Math.max(lastGetBy, lastLocator);
+
+  if (lastSegmentIndex <= 0) {
+    return null;
+  }
+
+  return `page${locator.slice(lastSegmentIndex)}`;
 }
 
 function maybeCaptureRecordedStep(

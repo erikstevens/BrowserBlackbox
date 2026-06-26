@@ -578,6 +578,7 @@ describe('workspace recording review state', () => {
       context: {
         testId: 'login-submit',
       },
+      relatedRequestIds: [],
       recommendations: {
         primary: {
           locator: 'page.getByTestId("login-submit")',
@@ -588,6 +589,299 @@ describe('workspace recording review state', () => {
         tagName: 'button',
       },
     });
+  });
+
+  it('correlates inspected targets to captured requests through matching recorded selectors', () => {
+    const state = useWorkspaceStore.getState();
+    state.beginRuntimeCapture('https://example.test/login', 'session-live-001');
+
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:30:00.000Z',
+        lastError: null,
+        recentEventCount: 1,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'capture-click-login',
+        timestamp: '2026-06-25T12:30:00.000Z',
+        category: 'replay',
+        code: 'recording.step.captured',
+        level: 'info',
+        message: 'Click Sign in',
+        source: 'electron_shell',
+        data: {
+          capturedAt: '2026-06-25T12:30:00.000Z',
+          capture: {
+            kind: 'click',
+            title: 'Click Sign in',
+            selector: 'page.getByTestId("login-submit")',
+            previousCaptureEventId: null,
+          },
+        },
+      },
+    });
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:30:01.000Z',
+        lastError: null,
+        recentEventCount: 2,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'network-start-login',
+        timestamp: '2026-06-25T12:30:01.000Z',
+        category: 'network',
+        code: 'network.request.started',
+        level: 'info',
+        message: 'POST https://example.test/api/login',
+        source: 'cdp',
+        data: {
+          headers: {
+            'content-type': 'application/json',
+          },
+          method: 'POST',
+          requestId: 'request-login',
+          url: 'https://example.test/api/login',
+        },
+      },
+    });
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:30:02.000Z',
+        lastError: null,
+        recentEventCount: 3,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'inspection-login',
+        timestamp: '2026-06-25T12:30:02.000Z',
+        category: 'browser',
+        code: 'inspection.target.selected',
+        level: 'info',
+        message: 'Selected element for inspection.',
+        source: 'electron_shell',
+        data: {
+          inspection: {
+            schemaVersion: '1.0.0',
+            target: {
+              tagName: 'button',
+              textContent: 'Sign in',
+              attributes: {
+                'data-testid': 'login-submit',
+              },
+              role: 'button',
+              accessibleName: 'Sign in',
+              interactiveType: 'button',
+            },
+            recommendations: {
+              primary: {
+                schemaVersion: '1.0.0',
+                locator: 'page.getByTestId("login-submit")',
+                strategy: 'test-id',
+                uniqueness: 'unique',
+                stability: 'excellent',
+                stabilityScore: 99,
+                reasoning: ['Stable explicit test contract attribute.'],
+                fallback: false,
+              },
+              fallbacks: [],
+            },
+            context: {
+              testId: 'login-submit',
+              iframeDepth: 0,
+              inShadowDom: false,
+              visible: true,
+              enabled: true,
+              obscured: false,
+            },
+            relatedRequestIds: [],
+          },
+        },
+      },
+    });
+
+    expect(useWorkspaceStore.getState().currentInspection?.relatedRequestIds).toEqual([
+      'request-login',
+    ]);
+  });
+
+  it('correlates chained inspection locators to child recorded selectors', () => {
+    const state = useWorkspaceStore.getState();
+    state.beginRuntimeCapture('https://example.test/orders', 'session-live-001');
+
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/orders',
+        pageUrl: 'https://example.test/orders',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:31:00.000Z',
+        lastError: null,
+        recentEventCount: 1,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'capture-click-edit',
+        timestamp: '2026-06-25T12:31:00.000Z',
+        category: 'replay',
+        code: 'recording.step.captured',
+        level: 'info',
+        message: 'Click Edit',
+        source: 'electron_shell',
+        data: {
+          capturedAt: '2026-06-25T12:31:00.000Z',
+          capture: {
+            kind: 'click',
+            title: 'Click Edit',
+            selector: 'page.getByRole("button", { name: "Edit" })',
+            previousCaptureEventId: null,
+          },
+        },
+      },
+    });
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/orders',
+        pageUrl: 'https://example.test/orders',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:31:01.000Z',
+        lastError: null,
+        recentEventCount: 2,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'network-start-edit',
+        timestamp: '2026-06-25T12:31:01.000Z',
+        category: 'network',
+        code: 'network.request.started',
+        level: 'info',
+        message: 'GET https://example.test/api/orders/2',
+        source: 'cdp',
+        data: {
+          headers: {
+            accept: 'application/json',
+          },
+          method: 'GET',
+          requestId: 'request-order-2',
+          url: 'https://example.test/api/orders/2',
+        },
+      },
+    });
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/orders',
+        pageUrl: 'https://example.test/orders',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:31:02.000Z',
+        lastError: null,
+        recentEventCount: 3,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'inspection-order-2',
+        timestamp: '2026-06-25T12:31:02.000Z',
+        category: 'browser',
+        code: 'inspection.target.selected',
+        level: 'info',
+        message: 'Selected element for inspection.',
+        source: 'electron_shell',
+        data: {
+          inspection: {
+            schemaVersion: '1.0.0',
+            target: {
+              tagName: 'button',
+              textContent: 'Edit',
+              attributes: {},
+              role: 'button',
+              accessibleName: 'Edit',
+              interactiveType: 'button',
+            },
+            recommendations: {
+              primary: {
+                schemaVersion: '1.0.0',
+                locator:
+                  'page.getByTestId("order-card-2").getByRole("button", { name: "Edit" })',
+                strategy: 'role-name',
+                uniqueness: 'unique',
+                stability: 'excellent',
+                stabilityScore: 94,
+                reasoning: ['Repeated child target is scoped to the nearest stable parent container.'],
+                fallback: false,
+              },
+              fallbacks: [],
+            },
+            stableParent: {
+              locator: 'page.getByTestId("order-card-2")',
+              strategy: 'test-id',
+              reasoning: ['Nearest parent container is unique enough to anchor a chained locator.'],
+            },
+            context: {
+              iframeDepth: 0,
+              inShadowDom: false,
+              visible: true,
+              enabled: true,
+              obscured: false,
+            },
+            relatedRequestIds: [],
+          },
+        },
+      },
+    });
+
+    expect(useWorkspaceStore.getState().currentInspection?.relatedRequestIds).toEqual([
+      'request-order-2',
+    ]);
   });
 
   it('derives failed-assertion diagnosis from blocking request and console evidence', () => {

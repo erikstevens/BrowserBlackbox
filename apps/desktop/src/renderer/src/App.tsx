@@ -59,6 +59,13 @@ export function App() {
   const [inspectionModeEnabled, setInspectionModeEnabled] = useState(false);
   const [persistenceReady, setPersistenceReady] = useState(false);
   const selectedRecordedStep = getSelectedRecordedStep(recordingSession);
+  const relatedCaptures =
+    currentInspection === null
+      ? []
+      : currentInspection.relatedRequestIds.flatMap((requestId) => {
+          const capture = captures.find((entry) => entry.id === requestId);
+          return capture ? [capture] : [];
+        });
   const { canUndo, canRedo } = getRecordingUndoAvailability(recordingSession);
   const selectedStepIndex = selectedRecordedStep
     ? recordingSession.present.steps.findIndex((step) => step.id === selectedRecordedStep.id)
@@ -517,6 +524,40 @@ export function App() {
                       </div>
                     ))}
                   </div>
+                </div>
+
+                <div className="inspection-card">
+                  <p className="section-label">Related requests</p>
+                  {relatedCaptures.length === 0 ? (
+                    <p className="empty-state">
+                      No request correlation is available for the current target yet.
+                    </p>
+                  ) : (
+                    <div className="checkpoint-list">
+                      {relatedCaptures.map((capture) => (
+                        <div className="step-review-card" key={capture.id}>
+                          <div className="step-review-header">
+                            <span className="step-index">
+                              {capture.request.method}
+                            </span>
+                            <span className="status-value">
+                              {capture.response?.status ??
+                                (capture.failure ? 'failed' : 'pending')}
+                            </span>
+                          </div>
+                          <p className="step-summary">{capture.request.url}</p>
+                          <p className="inspection-reason">
+                            request id: {capture.id}
+                          </p>
+                          {capture.correlationIds.length > 0 ? (
+                            <p className="inspection-reason">
+                              correlation: {capture.correlationIds.join(', ')}
+                            </p>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (

@@ -265,6 +265,64 @@ test.describe('desktop acceptance', () => {
       'Repeated child target is scoped to the nearest stable parent container.',
     );
   });
+
+  test('shows related requests for an inspected target when correlation is available', async () => {
+    await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
+    await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
+    await expect(statusRowPill(window, 'Phase')).toContainText('running');
+
+    await electronApp.evaluate(async ({ BrowserWindow }) => {
+      const browserWindow = BrowserWindow.getAllWindows()[0];
+      const view = browserWindow?.getBrowserView();
+      await view?.webContents.executeJavaScript(`
+        (() => {
+          const target = document.querySelector('[data-testid="login-submit"]');
+          if (!(target instanceof HTMLElement)) {
+            throw new Error('Login submit target was not found.');
+          }
+          target.click();
+        })();
+      `);
+    });
+
+    await expect(window.locator('.event-stream')).toContainText(
+      `POST ${fixtureServer.origin}/api/login`,
+    );
+
+    await window.getByRole('button', { name: 'Enter inspect mode' }).click();
+
+    await electronApp.evaluate(async ({ BrowserWindow }) => {
+      const browserWindow = BrowserWindow.getAllWindows()[0];
+      const view = browserWindow?.getBrowserView();
+      await view?.webContents.executeJavaScript(`
+        (() => {
+          const target = document.querySelector('[data-testid="login-submit"]');
+          if (!(target instanceof HTMLElement)) {
+            throw new Error('Inspection target was not found in the fixture page.');
+          }
+          target.dispatchEvent(new MouseEvent('mousemove', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 20,
+            clientY: 20,
+          }));
+          target.dispatchEvent(new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 20,
+            clientY: 20,
+          }));
+        })();
+      `);
+    });
+
+    await expect(window.getByTestId('inspection-panel')).toContainText(
+      'Related requests',
+    );
+    await expect(window.getByTestId('inspection-panel')).toContainText(
+      `${fixtureServer.origin}/api/login`,
+    );
+  });
 });
 
 async function createFixtureServer(): Promise<FixtureServer> {
@@ -272,6 +330,12 @@ async function createFixtureServer(): Promise<FixtureServer> {
     if (request.url === '/api/health') {
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (request.url === '/api/login' && request.method === 'POST') {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ ok: true, token: 'opaque-login-token' }));
       return;
     }
 
@@ -309,6 +373,19 @@ async function createFixtureServer(): Promise<FixtureServer> {
               .catch((error) => {
                 console.error('fixture fetch failed', error);
               });
+            document.querySelector('[data-testid="login-submit"]').addEventListener('click', () => {
+              fetch('/api/login', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  user: 'qa@example.test',
+                }),
+              }).catch((error) => {
+                console.error('fixture login failed', error);
+              });
+            });
           </script>
         </body>
       </html>`);
