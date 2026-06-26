@@ -177,6 +177,49 @@ test.describe('desktop acceptance', () => {
     await expect(window.getByTestId('inspection-panel')).toContainText('Sign in');
     await expect(window.locator('.event-stream')).toContainText('Inspection mode enabled.');
   });
+
+  test('scores dynamic selectors as risky and surfaces reasoning', async () => {
+    await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
+    await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
+    await expect(statusRowPill(window, 'Phase')).toContainText('running');
+    await window.getByRole('button', { name: 'Enter inspect mode' }).click();
+
+    await electronApp.evaluate(async ({ BrowserWindow }) => {
+      const browserWindow = BrowserWindow.getAllWindows()[0];
+      const view = browserWindow?.getBrowserView();
+      await view?.webContents.executeJavaScript(`
+        (async () => {
+          const target = document.getElementById('btn__12345678');
+          if (!(target instanceof HTMLElement)) {
+            throw new Error('Dynamic inspection target was not found.');
+          }
+          target.dispatchEvent(new MouseEvent('mousemove', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 24,
+            clientY: 24,
+          }));
+          target.dispatchEvent(new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 24,
+            clientY: 24,
+          }));
+        })();
+      `);
+    });
+
+    await expect(window.getByTestId('inspection-panel')).toContainText(
+      'page.getByRole("button", { name: "Order 42 at 12:34" })',
+    );
+    await expect(window.getByTestId('inspection-panel')).toContainText('risky');
+    await expect(window.getByTestId('inspection-panel')).toContainText(
+      'Visible or accessible text appears dynamic.',
+    );
+    await expect(window.getByTestId('inspection-panel')).toContainText(
+      'ID looks auto-generated or unstable.',
+    );
+  });
 });
 
 async function createFixtureServer(): Promise<FixtureServer> {
@@ -201,6 +244,7 @@ async function createFixtureServer(): Promise<FixtureServer> {
             <label for="fixture-email">Email</label>
             <input id="fixture-email" name="email" type="email" placeholder="qa@example.test" />
             <button data-testid="login-submit" type="button">Sign in</button>
+            <button id="btn__12345678" type="button">Order 42 at 12:34</button>
           </main>
           <script>
             console.log('fixture console ready');

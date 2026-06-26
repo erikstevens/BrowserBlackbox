@@ -407,11 +407,25 @@ export function App() {
                       </span>
                     </p>
                     <p className="status-row">
+                      <span className="status-label">Uniqueness</span>
+                      <span className="status-value">
+                        {currentInspection.recommendations.primary.uniqueness}
+                      </span>
+                    </p>
+                    <p className="status-row">
                       <span className="status-label">Test ID</span>
                       <span className="status-value">
                         {currentInspection.context.testId ?? 'None'}
                       </span>
                     </p>
+                    {currentInspection.context.iframeSource ? (
+                      <p className="status-row">
+                        <span className="status-label">Frame source</span>
+                        <span className="status-value">
+                          {currentInspection.context.iframeSource}
+                        </span>
+                      </p>
+                    ) : null}
                     <p className="status-row">
                       <span className="status-label">Visible / enabled / obscured</span>
                       <span className="status-value">
@@ -436,6 +450,20 @@ export function App() {
                         </span>
                       </p>
                     ) : null}
+                    {currentInspection.target.interactiveType !== 'other' &&
+                    !currentInspection.target.accessibleName ? (
+                      <p className="runtime-error">
+                        This interactive target does not expose a stable accessible name.
+                      </p>
+                    ) : null}
+                    <div className="inspection-reasoning">
+                      <p className="section-label">Primary reasoning</p>
+                      {currentInspection.recommendations.primary.reasoning.map((reason) => (
+                        <p className="inspection-reason" key={reason}>
+                          {reason}
+                        </p>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
@@ -452,10 +480,15 @@ export function App() {
                           <div className="step-review-header">
                             <span className="step-index">{candidate.strategy}</span>
                             <span className="status-value">
-                              {candidate.stabilityScore}/100
+                              {candidate.stability} · {candidate.stabilityScore}/100
                             </span>
                           </div>
                           <p className="step-summary">{candidate.locator}</p>
+                          {candidate.reasoning.map((reason) => (
+                            <p className="inspection-reason" key={reason}>
+                              {reason}
+                            </p>
+                          ))}
                         </div>
                       ))}
                     </div>

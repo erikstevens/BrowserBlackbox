@@ -722,8 +722,19 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
       const overlayId = '__browser_blackbox_inspector_overlay__';
       const normalizeText = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
       const escapeDouble = (value) => String(value).replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
-      const escapeSingle = (value) => String(value).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'");
       const selectorSchemaVersion = '${domainVersions.domainSchemaVersion}';
+      const strategyPriority = {
+        'test-id': 0,
+        'role-name': 1,
+        label: 2,
+        'semantic-attribute': 3,
+        text: 4,
+        css: 5,
+        xpath: 6,
+      };
+      const instrumentedDocuments = new WeakSet();
+      const observedDocuments = new WeakSet();
+      const instrumentedFrames = new WeakSet();
       let inspectionModeEnabled = false;
       let selectedElement = null;
       const resolveLabel = (element) => {
@@ -771,6 +782,48 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
         }
         return 'other';
       };
+      const resolveFrameContext = (targetWindow) => {
+        let depth = 0;
+        let currentWindow = targetWindow;
+        let iframeSource;
+        while (currentWindow && currentWindow !== currentWindow.top) {
+          depth += 1;
+          const frameElement = currentWindow.frameElement;
+          if (!iframeSource && frameElement instanceof HTMLIFrameElement) {
+            iframeSource =
+              frameElement.getAttribute('src') ||
+              frameElement.getAttribute('title') ||
+              frameElement.getAttribute('name') ||
+              'same-origin iframe';
+          }
+          try {
+            currentWindow = currentWindow.parent;
+          } catch {
+            break;
+          }
+        }
+        return {
+          iframeDepth: depth,
+          iframeSource,
+        };
+      };
+      const looksDynamicText = (value) => {
+        const normalized = normalizeText(value);
+        return /(?:\\b\\d+\\b|\\d{1,2}:\\d{2}(?::\\d{2})?|\\d{4}-\\d{2}-\\d{2}|today|yesterday|seconds?|minutes?|hours?|items?|rows?|orders?)/i.test(normalized);
+      };
+      const looksGeneratedToken = (value) => {
+        const normalized = String(value ?? '');
+        return /(?:[a-f0-9]{8,}|__|[_-]\\d{3,}|css-[a-z0-9]+|chakra-|Mui|ember|react-select|svelte-|astro-|vue-)/i.test(normalized);
+      };
+      const computeDomDepth = (element) => {
+        let depth = 0;
+        let current = element.parentElement;
+        while (current) {
+          depth += 1;
+          current = current.parentElement;
+        }
+        return depth;
+      };
       const collectAttributes = (element) => {
         return Array.from(element.attributes).reduce((record, attribute) => {
           record[attribute.name] = attribute.value;
@@ -817,6 +870,7 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
           fallback,
         };
       };
+      const clampScore = (value) => Math.max(0, Math.min(100, Math.round(value)));
       const countElements = (predicate) => {
         let total = 0;
         const elements = document.querySelectorAll('*');
@@ -827,6 +881,54 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
         }
         return total;
       };
+      const createRankedCandidate = (element, input) => {
+        let score = input.baseScore;
+        const reasons = [...input.reasons];
+        const domDepth = computeDomDepth(element);
+        const frameContext = resolveFrameContext(element.ownerDocument.defaultView);
+        const className = typeof element.className === 'string' ? element.className : '';
+        if (input.uniqueness === 'multiple') {
+          score -= 8;
+          reasons.push('Candidate is not unique in the current DOM.');
+        }
+        if (input.dynamicText) {
+          score -=
+            input.strategy === 'role-name'
+              ? 24
+              : input.strategy === 'text'
+                ? 20
+                : 16;
+          reasons.push('Visible or accessible text appears dynamic.');
+        }
+        if (domDepth >= 8 && input.strategy !== 'test-id' && input.strategy !== 'role-name') {
+          score -= Math.min(12, domDepth - 7);
+          reasons.push('Deep DOM nesting increases selector fragility.');
+        }
+        if (className && looksGeneratedToken(className) && input.strategy === 'css') {
+          score -= 10;
+          reasons.push('Classes look generated or framework-scoped.');
+        }
+        if (element.id && looksGeneratedToken(element.id) && input.strategy === 'css') {
+          score -= 14;
+          reasons.push('ID looks auto-generated or unstable.');
+        }
+        if (element.getRootNode() instanceof ShadowRoot) {
+          score -= 8;
+          reasons.push('Target sits inside Shadow DOM.');
+        }
+        if (frameContext.iframeDepth > 0) {
+          score -= Math.min(14, frameContext.iframeDepth * 6);
+          reasons.push('Target is inside an iframe.');
+        }
+        return buildCandidate(
+          input.locator,
+          input.strategy,
+          input.uniqueness,
+          clampScore(score),
+          Array.from(new Set(reasons)),
+          input.fallback,
+        );
+      };
       const buildLocatorCandidates = (element) => {
         const candidates = [];
         const testId = element.getAttribute('data-testid') || element.getAttribute('data-test');
@@ -834,96 +936,130 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
           const isDataTestId = element.getAttribute('data-testid') === testId;
           const attributeName = isDataTestId ? 'data-testid' : 'data-test';
           const uniqueness = countElements((entry) => entry.getAttribute(attributeName) === testId) === 1 ? 'unique' : 'multiple';
-          candidates.push(buildCandidate(
-            'page.getByTestId("' + escapeDouble(testId) + '")',
-            'test-id',
+          candidates.push(createRankedCandidate(element, {
+            locator: 'page.getByTestId("' + escapeDouble(testId) + '")',
+            strategy: 'test-id',
             uniqueness,
-            uniqueness === 'unique' ? 99 : 92,
-            ['Stable explicit test contract attribute.'],
-            false,
-          ));
+            baseScore: uniqueness === 'unique' ? 99 : 92,
+            reasons: ['Stable explicit test contract attribute.'],
+            dynamicText: false,
+            fallback: false,
+          }));
         }
         const role = resolveRole(element);
         const accessibleName = resolveName(element);
         if (role && accessibleName) {
           const uniqueness = countElements((entry) => resolveRole(entry) === role && resolveName(entry) === accessibleName) === 1 ? 'unique' : 'multiple';
-          candidates.push(buildCandidate(
-            'page.getByRole("' + escapeDouble(role) + '", { name: "' + escapeDouble(accessibleName) + '" })',
-            'role-name',
+          candidates.push(createRankedCandidate(element, {
+            locator:
+              'page.getByRole("' +
+              escapeDouble(role) +
+              '", { name: "' +
+              escapeDouble(accessibleName) +
+              '" })',
+            strategy: 'role-name',
             uniqueness,
-            uniqueness === 'unique' ? 95 : 82,
-            ['Accessible role and name align with user-visible semantics.'],
-            candidates.length > 0,
-          ));
+            baseScore: uniqueness === 'unique' ? 95 : 82,
+            reasons: ['Accessible role and name align with user-visible semantics.'],
+            dynamicText: looksDynamicText(accessibleName),
+            fallback: candidates.length > 0,
+          }));
         }
         const label = resolveLabel(element);
         if (label) {
           const uniqueness = countElements((entry) => (entry instanceof HTMLInputElement || entry instanceof HTMLTextAreaElement || entry instanceof HTMLSelectElement) && resolveLabel(entry) === label) === 1 ? 'unique' : 'multiple';
-          candidates.push(buildCandidate(
-            'page.getByLabel("' + escapeDouble(label) + '")',
-            'label',
+          candidates.push(createRankedCandidate(element, {
+            locator: 'page.getByLabel("' + escapeDouble(label) + '")',
+            strategy: 'label',
             uniqueness,
-            uniqueness === 'unique' ? 90 : 78,
-            ['Associated form label is present and readable.'],
-            candidates.length > 0,
-          ));
+            baseScore: uniqueness === 'unique' ? 90 : 78,
+            reasons: ['Associated form label is present and readable.'],
+            dynamicText: looksDynamicText(label),
+            fallback: candidates.length > 0,
+          }));
         }
         const placeholder = element.getAttribute('placeholder');
         if (placeholder) {
-          candidates.push(buildCandidate(
-            'page.getByPlaceholder("' + escapeDouble(placeholder) + '")',
-            'semantic-attribute',
-            'unknown',
-            72,
-            ['Placeholder text is available but can drift more than test IDs or labels.'],
-            candidates.length > 0,
-          ));
+          candidates.push(createRankedCandidate(element, {
+            locator: 'page.getByPlaceholder("' + escapeDouble(placeholder) + '")',
+            strategy: 'semantic-attribute',
+            uniqueness: 'unknown',
+            baseScore: 72,
+            reasons: ['Placeholder text is available but can drift more than test IDs or labels.'],
+            dynamicText: looksDynamicText(placeholder),
+            fallback: candidates.length > 0,
+          }));
         }
         const title = element.getAttribute('title');
         if (title) {
-          candidates.push(buildCandidate(
-            'page.getByTitle("' + escapeDouble(title) + '")',
-            'semantic-attribute',
-            'unknown',
-            68,
-            ['Title attribute is available but may be less stable than explicit test contracts.'],
-            candidates.length > 0,
-          ));
+          candidates.push(createRankedCandidate(element, {
+            locator: 'page.getByTitle("' + escapeDouble(title) + '")',
+            strategy: 'semantic-attribute',
+            uniqueness: 'unknown',
+            baseScore: 68,
+            reasons: ['Title attribute is available but may be less stable than explicit test contracts.'],
+            dynamicText: looksDynamicText(title),
+            fallback: candidates.length > 0,
+          }));
         }
         const text = normalizeText(element.textContent ?? '');
         if (text && text.length <= 80) {
           const uniqueness = countElements((entry) => normalizeText(entry.textContent ?? '') === text) === 1 ? 'unique' : 'multiple';
-          candidates.push(buildCandidate(
-            'page.getByText("' + escapeDouble(text) + '")',
-            'text',
+          candidates.push(createRankedCandidate(element, {
+            locator: 'page.getByText("' + escapeDouble(text) + '")',
+            strategy: 'text',
             uniqueness,
-            /\\d|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}:\\d{2}/.test(text) ? 52 : uniqueness === 'unique' ? 70 : 60,
-            [/\\d|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}:\\d{2}/.test(text) ? 'Visible text appears dynamic.' : 'Visible text can be used when semantic selectors are unavailable.'],
-            candidates.length > 0,
-          ));
+            baseScore: uniqueness === 'unique' ? 70 : 60,
+            reasons: ['Visible text can be used when semantic selectors are unavailable.'],
+            dynamicText: looksDynamicText(text),
+            fallback: candidates.length > 0,
+          }));
         }
         if (element.id) {
           const uniqueness = document.querySelectorAll('#' + CSS.escape(element.id)).length === 1 ? 'unique' : 'multiple';
-          const looksGenerated = /\\d{4,}|[a-f0-9]{8,}|_|__|-\\d+$/.test(element.id);
-          candidates.push(buildCandidate(
-            'page.locator("#' + escapeDouble(element.id) + '")',
-            'css',
+          candidates.push(createRankedCandidate(element, {
+            locator: 'page.locator("#' + escapeDouble(element.id) + '")',
+            strategy: 'css',
             uniqueness,
-            looksGenerated ? 48 : uniqueness === 'unique' ? 64 : 54,
-            [looksGenerated ? 'ID looks generated or unstable.' : 'CSS ID fallback is available.'],
-            candidates.length > 0,
-          ));
+            baseScore: uniqueness === 'unique' ? 64 : 54,
+            reasons: ['CSS ID fallback is available.'],
+            dynamicText: false,
+            fallback: candidates.length > 0,
+          }));
         } else if ('name' in element && typeof element.name === 'string' && element.name) {
-          candidates.push(buildCandidate(
-            'page.locator("' + element.tagName.toLowerCase() + '[name=\\\\\\"' + escapeDouble(element.name) + '\\\\"]")',
-            'css',
-            'unknown',
-            58,
-            ['Name attribute provides a structural CSS fallback.'],
-            candidates.length > 0,
-          ));
+          candidates.push(createRankedCandidate(element, {
+            locator:
+              'page.locator("' +
+              element.tagName.toLowerCase() +
+              '[name=\\\\\\"' +
+              escapeDouble(element.name) +
+              '\\\\"]")',
+            strategy: 'css',
+            uniqueness: 'unknown',
+            baseScore: 58,
+            reasons: ['Name attribute provides a structural CSS fallback.'],
+            dynamicText: looksDynamicText(element.name),
+            fallback: candidates.length > 0,
+          }));
         }
-        return candidates.slice(0, 4);
+        const uniqueCandidates = [];
+        const seen = new Set();
+        for (const candidate of candidates) {
+          if (seen.has(candidate.locator)) {
+            continue;
+          }
+          seen.add(candidate.locator);
+          uniqueCandidates.push(candidate);
+        }
+        return uniqueCandidates
+          .sort((left, right) => {
+            return (
+              strategyPriority[left.strategy] - strategyPriority[right.strategy] ||
+              right.stabilityScore - left.stabilityScore ||
+              left.locator.localeCompare(right.locator)
+            );
+          })
+          .slice(0, 4);
       };
       const selectPrimaryAndFallbacks = (candidates) => {
         if (candidates.length === 0) {
@@ -952,12 +1088,12 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
           })),
         };
       };
-      const ensureOverlay = () => {
-        let overlay = document.getElementById(overlayId);
+      const ensureOverlay = (targetDocument = document) => {
+        let overlay = targetDocument.getElementById(overlayId);
         if (overlay instanceof HTMLDivElement) {
           return overlay;
         }
-        overlay = document.createElement('div');
+        overlay = targetDocument.createElement('div');
         overlay.id = overlayId;
         overlay.setAttribute('aria-hidden', 'true');
         overlay.style.position = 'fixed';
@@ -969,21 +1105,35 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
           '<div data-bb-box="true" style="position:fixed;border:2px solid rgba(231,111,81,0.95);background:rgba(231,111,81,0.08);box-shadow:0 0 0 1px rgba(15,23,32,0.85);"></div>',
           '<div data-bb-label="true" style="position:fixed;max-width:420px;padding:8px 12px;border-radius:12px;background:rgba(15,23,32,0.96);color:#f4f1ea;font:12px/1.45 IBM Plex Sans,system-ui,sans-serif;letter-spacing:0.04em;box-shadow:0 12px 32px rgba(0,0,0,0.28);"></div>',
         ].join('');
-        document.documentElement.appendChild(overlay);
+        targetDocument.documentElement.appendChild(overlay);
         return overlay;
       };
-      const hideOverlay = () => {
-        const overlay = ensureOverlay();
+      const hideOverlay = (targetDocument = document) => {
+        const overlay = ensureOverlay(targetDocument);
         overlay.style.display = 'none';
       };
+      const hideOverlaysRecursively = (targetDocument = document) => {
+        hideOverlay(targetDocument);
+        for (const frame of targetDocument.querySelectorAll('iframe')) {
+          try {
+            if (frame.contentDocument) {
+              hideOverlaysRecursively(frame.contentDocument);
+            }
+          } catch {
+            // Cross-origin frame access is intentionally ignored.
+          }
+        }
+      };
       const renderOverlay = (element, inspection, modeLabel) => {
-        const overlay = ensureOverlay();
+        const targetDocument = element.ownerDocument;
+        const overlay = ensureOverlay(targetDocument);
         const box = overlay.querySelector('[data-bb-box="true"]');
         const label = overlay.querySelector('[data-bb-label="true"]');
         if (!(box instanceof HTMLDivElement) || !(label instanceof HTMLDivElement)) {
           return;
         }
         const rect = element.getBoundingClientRect();
+        const targetWindow = targetDocument.defaultView || window;
         overlay.style.display = 'block';
         box.style.left = rect.left + 'px';
         box.style.top = rect.top + 'px';
@@ -995,7 +1145,7 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
           inspection.recommendations.primary.stability + ' ' + inspection.recommendations.primary.stabilityScore + '/100',
         ].join(' · ');
         const labelTop = rect.top > 52 ? rect.top - 42 : rect.bottom + 10;
-        const labelLeft = Math.min(rect.left, Math.max(12, window.innerWidth - 432));
+        const labelLeft = Math.min(rect.left, Math.max(12, targetWindow.innerWidth - 432));
         label.style.left = labelLeft + 'px';
         label.style.top = Math.max(12, labelTop) + 'px';
       };
@@ -1004,6 +1154,7 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
         const recommendations = selectPrimaryAndFallbacks(buildLocatorCandidates(element));
         const rootNode = element.getRootNode();
         const labelText = resolveLabel(element);
+        const frameContext = resolveFrameContext(element.ownerDocument.defaultView);
         const inspection = {
           schemaVersion: selectorSchemaVersion,
           target: {
@@ -1018,8 +1169,8 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
           recommendations,
           context: {
             testId: element.getAttribute('data-testid') || element.getAttribute('data-test') || undefined,
-            iframeDepth: window.top === window ? 0 : 1,
-            iframeSource: window.frameElement instanceof HTMLIFrameElement ? window.frameElement.src || undefined : undefined,
+            iframeDepth: frameContext.iframeDepth,
+            iframeSource: frameContext.iframeSource,
             inShadowDom: rootNode instanceof ShadowRoot,
             visible: isVisible(element),
             enabled: isEnabled(element),
@@ -1057,12 +1208,55 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
           window.__browserBlackboxSetInspectMode?.(false);
         }
       };
+      const observeFrameAttachments = (targetDocument) => {
+        if (observedDocuments.has(targetDocument)) {
+          return;
+        }
+        observedDocuments.add(targetDocument);
+        const observer = new MutationObserver(() => {
+          instrumentSameOriginFrames(targetDocument);
+        });
+        observer.observe(targetDocument.documentElement || targetDocument.body, {
+          childList: true,
+          subtree: true,
+        });
+      };
+      const attachInspectionDocument = (targetDocument) => {
+        if (instrumentedDocuments.has(targetDocument)) {
+          return;
+        }
+        instrumentedDocuments.add(targetDocument);
+        targetDocument.addEventListener('mousemove', handleInspectHover, true);
+        targetDocument.addEventListener('click', handleInspectClick, true);
+        targetDocument.addEventListener('keydown', handleInspectKeydown, true);
+        instrumentSameOriginFrames(targetDocument);
+        observeFrameAttachments(targetDocument);
+      };
+      const instrumentSameOriginFrames = (targetDocument) => {
+        for (const frame of targetDocument.querySelectorAll('iframe')) {
+          if (instrumentedFrames.has(frame)) {
+            continue;
+          }
+          instrumentedFrames.add(frame);
+          const attachFrame = () => {
+            try {
+              if (frame.contentDocument) {
+                attachInspectionDocument(frame.contentDocument);
+              }
+            } catch {
+              // Cross-origin frame access is intentionally ignored.
+            }
+          };
+          frame.addEventListener('load', attachFrame);
+          attachFrame();
+        }
+      };
       window.__browserBlackboxSetInspectMode = (enabled, options = {}) => {
         inspectionModeEnabled = enabled;
         selectedElement = enabled ? selectedElement : null;
         document.body.style.cursor = enabled ? 'crosshair' : '';
         if (!enabled) {
-          hideOverlay();
+          hideOverlaysRecursively(document);
         }
         if (options.silent !== true) {
           emitInspectionMode(enabled);
@@ -1117,9 +1311,7 @@ function buildEmbeddedCaptureScript(initialInspectionModeEnabled: boolean): stri
           sensitive,
         });
       }, true);
-      document.addEventListener('mousemove', handleInspectHover, true);
-      document.addEventListener('click', handleInspectClick, true);
-      document.addEventListener('keydown', handleInspectKeydown, true);
+      attachInspectionDocument(document);
       window.__browserBlackboxSetInspectMode?.(${initialInspectionModeEnabled ? 'true' : 'false'});
     })();
   `;
