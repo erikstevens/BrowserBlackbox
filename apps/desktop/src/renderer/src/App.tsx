@@ -11,6 +11,9 @@ export function App() {
   const browserRuntime = useWorkspaceStore((state) => state.browserRuntime);
   const runtimeHealth = useWorkspaceStore((state) => state.runtimeHealth);
   const runtimeEvents = useWorkspaceStore((state) => state.runtimeEvents);
+  const captures = useWorkspaceStore((state) => state.captures);
+  const timeline = useWorkspaceStore((state) => state.timeline);
+  const diagnosis = useWorkspaceStore((state) => state.diagnosis);
   const recordingSession = useWorkspaceStore((state) => state.recordingSession);
   const replayPlan = useWorkspaceStore((state) => state.replayPlan);
   const setUrl = useWorkspaceStore((state) => state.setTargetUrl);
@@ -283,6 +286,31 @@ export function App() {
               {!browserRuntime.lastError && runtimeHealth.lastError ? (
                 <p className="runtime-error">{runtimeHealth.lastError}</p>
               ) : null}
+            </div>
+          </article>
+
+          <article className="panel control-panel">
+            <p className="section-label">Evidence ledger</p>
+            <div className="runtime-status">
+              <p className="status-row">
+                <span className="status-label">Requests</span>
+                <span className="status-value">{captures.length}</span>
+              </p>
+              <p className="status-row">
+                <span className="status-label">Timeline events</span>
+                <span className="status-value">{timeline.length}</span>
+              </p>
+              <p className="status-row">
+                <span className="status-label">Diagnosis</span>
+                <span className="status-value">
+                  {diagnosis ? diagnosis.findings.length : 0}
+                </span>
+              </p>
+              <p className="panel-copy">
+                {diagnosis?.findings[0]?.summary ??
+                  diagnosis?.noDeterminationReason ??
+                  'No deterministic diagnosis has been derived from the current evidence yet.'}
+              </p>
             </div>
           </article>
 

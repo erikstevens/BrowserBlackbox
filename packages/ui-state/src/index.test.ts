@@ -232,6 +232,469 @@ describe('workspace recording review state', () => {
     expect(hydrated.targetUrl).toBe('https://example.test/login');
     expect(hydrated.recordingSession.present.steps).toHaveLength(1);
     expect(hydrated.recordingSession.present.steps[0]?.title).toBe('Fill Email');
+    expect(hydrated.captures).toHaveLength(0);
+    expect(hydrated.timeline).toHaveLength(1);
+  });
+
+  it('derives request captures, timeline events, and diagnosis from runtime events', () => {
+    const state = useWorkspaceStore.getState();
+    state.beginRuntimeCapture('https://example.test/login', 'session-live-001');
+
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:12:00.000Z',
+        lastError: null,
+        recentEventCount: 1,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'capture-click-003',
+        timestamp: '2026-06-25T12:12:00.000Z',
+        category: 'replay',
+        code: 'recording.step.captured',
+        level: 'info',
+        message: 'Click Sign in',
+        source: 'electron_shell',
+        data: {
+          capturedAt: '2026-06-25T12:12:00.000Z',
+          capture: {
+            kind: 'click',
+            title: 'Click Sign in',
+            selector: 'page.getByRole("button", { name: "Sign in" })',
+            previousCaptureEventId: null,
+          },
+        },
+      },
+    });
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:12:01.000Z',
+        lastError: null,
+        recentEventCount: 2,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'network-start-001',
+        timestamp: '2026-06-25T12:12:01.000Z',
+        category: 'network',
+        code: 'network.request.started',
+        level: 'info',
+        message: 'POST https://example.test/api/login',
+        source: 'cdp',
+        data: {
+          body: {
+            state: 'redacted',
+            contentType: 'application/json',
+            text: '{"password":"[REDACTED]"}',
+            redactionRuleIds: ['rule-password'],
+          },
+          headers: {
+            'content-type': 'application/json',
+            'x-request-id': 'req-123',
+          },
+          method: 'POST',
+          requestId: 'request-001',
+          url: 'https://example.test/api/login',
+        },
+      },
+    });
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'degraded',
+        lastEventAt: '2026-06-25T12:12:02.000Z',
+        lastError: 'net::ERR_CONNECTION_REFUSED',
+        recentEventCount: 3,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'network-fail-001',
+        timestamp: '2026-06-25T12:12:02.000Z',
+        category: 'network',
+        code: 'network.request.failed',
+        level: 'error',
+        message: 'Network loading failed for https://example.test/api/login.',
+        source: 'cdp',
+        detail: 'net::ERR_CONNECTION_REFUSED',
+        data: {
+          errorText: 'net::ERR_CONNECTION_REFUSED',
+          headers: {
+            'content-type': 'application/json',
+            'x-request-id': 'req-123',
+          },
+          method: 'POST',
+          requestId: 'request-001',
+          url: 'https://example.test/api/login',
+        },
+      },
+    });
+
+    const evidence = useWorkspaceStore.getState();
+    expect(evidence.captures).toHaveLength(1);
+    expect(evidence.captures[0]).toMatchObject({
+      id: 'request-001',
+      triggeringStepId: 'step-captured-capture-click-003',
+      request: {
+        body: {
+          state: 'redacted',
+          text: '{"password":"[REDACTED]"}',
+        },
+        headers: {
+          'content-type': 'application/json',
+          'x-request-id': 'req-123',
+        },
+        method: 'POST',
+        url: 'https://example.test/api/login',
+      },
+      failure: {
+        code: 'network.request.failed',
+      },
+    });
+    expect(evidence.timeline.map((event) => event.kind)).toEqual(['user-action', 'request']);
+    expect(evidence.diagnosis?.findings[0]?.ruleId).toBe(
+      'navigation_blocked_by_request_failure',
+    );
+  });
+
+  it('persists enriched response metadata into the evidence ledger', () => {
+    const state = useWorkspaceStore.getState();
+    state.beginRuntimeCapture('https://example.test/login', 'session-live-001');
+
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:15:00.000Z',
+        lastError: null,
+        recentEventCount: 1,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'network-start-002',
+        timestamp: '2026-06-25T12:15:00.000Z',
+        category: 'network',
+        code: 'network.request.started',
+        level: 'info',
+        message: 'GET https://example.test/api/profile',
+        source: 'cdp',
+        data: {
+          headers: {
+            accept: 'application/json',
+          },
+          method: 'GET',
+          requestId: 'request-002',
+          url: 'https://example.test/api/profile',
+        },
+      },
+    });
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:15:01.000Z',
+        lastError: null,
+        recentEventCount: 2,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'network-response-002',
+        timestamp: '2026-06-25T12:15:01.000Z',
+        category: 'network',
+        code: 'network.response.received',
+        level: 'info',
+        message: 'Response 200 from https://example.test/api/profile',
+        source: 'cdp',
+        data: {
+          correlationIds: ['x-request-id:req-456'],
+          durationMs: 48,
+          fromCache: true,
+          fromServiceWorker: false,
+          headers: {
+            'content-type': 'application/json',
+            'x-request-id': 'req-456',
+          },
+          responseBody: {
+            state: 'full',
+            contentType: 'application/json',
+            text: '{"id":"user-1","name":"QA"}',
+          },
+          method: 'GET',
+          protocol: 'h2',
+          requestId: 'request-002',
+          status: 200,
+          timings: {
+            dnsMs: 5,
+            connectMs: 7,
+            requestMs: 8,
+            responseMs: 28,
+          },
+          url: 'https://example.test/api/profile',
+        },
+      },
+    });
+
+    expect(useWorkspaceStore.getState().captures[0]).toMatchObject({
+      correlationIds: ['x-request-id:req-456'],
+      durationMs: 48,
+      origin: {
+        fromCache: true,
+        fromServiceWorker: false,
+      },
+      response: {
+        body: {
+          state: 'full',
+          text: '{"id":"user-1","name":"QA"}',
+        },
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          'x-request-id': 'req-456',
+        },
+      },
+      timings: {
+        dnsMs: 5,
+        connectMs: 7,
+        requestMs: 8,
+        responseMs: 28,
+      },
+    });
+  });
+
+  it('derives failed-assertion diagnosis from blocking request and console evidence', () => {
+    const state = useWorkspaceStore.getState();
+    state.beginRuntimeCapture('https://example.test/login', 'session-live-001');
+
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:20:00.000Z',
+        lastError: null,
+        recentEventCount: 1,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'network-start-003',
+        timestamp: '2026-06-25T12:20:00.000Z',
+        category: 'network',
+        code: 'network.request.started',
+        level: 'info',
+        message: 'POST https://example.test/api/login',
+        source: 'cdp',
+        data: {
+          headers: {
+            'content-type': 'application/json',
+          },
+          method: 'POST',
+          requestId: 'request-003',
+          url: 'https://example.test/api/login',
+        },
+      },
+    });
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'degraded',
+        lastEventAt: '2026-06-25T12:20:01.000Z',
+        lastError: '500 Internal Server Error',
+        recentEventCount: 2,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'network-response-003',
+        timestamp: '2026-06-25T12:20:01.000Z',
+        category: 'network',
+        code: 'network.response.received',
+        level: 'info',
+        message: 'Response 500 from https://example.test/api/login',
+        source: 'cdp',
+        data: {
+          headers: {
+            'content-type': 'application/json',
+          },
+          method: 'POST',
+          requestId: 'request-003',
+          status: 500,
+          url: 'https://example.test/api/login',
+        },
+      },
+    });
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: 'ReferenceError: loginFailed is not defined',
+      },
+      health: {
+        status: 'error',
+        lastEventAt: '2026-06-25T12:20:02.000Z',
+        lastError: 'ReferenceError: loginFailed is not defined',
+        recentEventCount: 3,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'console-error-003',
+        timestamp: '2026-06-25T12:20:02.000Z',
+        category: 'console',
+        code: 'console.message',
+        level: 'error',
+        message: 'ReferenceError: loginFailed is not defined',
+        source: 'electron_shell',
+      },
+    });
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: 'waitFor heading timed out',
+      },
+      health: {
+        status: 'error',
+        lastEventAt: '2026-06-25T12:20:03.000Z',
+        lastError: 'waitFor heading timed out',
+        recentEventCount: 4,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'assertion-failed-003',
+        timestamp: '2026-06-25T12:20:03.000Z',
+        category: 'replay',
+        code: 'replay.assertion.failed',
+        level: 'error',
+        message: 'Replay failed at Assert dashboard heading.',
+        source: 'runtime_manager',
+        detail: 'waitFor heading timed out',
+        data: {
+          assertionKind: 'element-visible',
+          stepId: 'step-assert-dashboard',
+          stepKind: 'assertion',
+        },
+      },
+    });
+
+    const evidence = useWorkspaceStore.getState();
+    expect(evidence.timeline.map((event) => event.kind)).toEqual([
+      'request',
+      'exception',
+      'assertion',
+      'timeout',
+    ]);
+    expect(evidence.diagnosis?.findings.map((finding) => finding.ruleId)).toEqual([
+      'assertion_blocked_by_failed_request',
+      'assertion_blocked_by_console_error',
+    ]);
+  });
+
+  it('derives popup-missing diagnosis from failed wait-for-popup replay steps', () => {
+    const state = useWorkspaceStore.getState();
+    state.beginRuntimeCapture('https://example.test/login', 'session-live-001');
+
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/login',
+        pageUrl: 'https://example.test/login',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: 'popup timed out',
+      },
+      health: {
+        status: 'error',
+        lastEventAt: '2026-06-25T12:21:00.000Z',
+        lastError: 'popup timed out',
+        recentEventCount: 1,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'popup-failed-001',
+        timestamp: '2026-06-25T12:21:00.000Z',
+        category: 'replay',
+        code: 'replay.step.failed',
+        level: 'error',
+        message: 'Replay failed at Wait for popup.',
+        source: 'runtime_manager',
+        detail: 'popup timed out',
+        data: {
+          actionType: 'wait-for-popup',
+          stepId: 'step-wait-popup',
+          stepKind: 'action',
+        },
+      },
+    });
+
+    expect(useWorkspaceStore.getState().diagnosis?.findings[0]).toMatchObject({
+      ruleId: 'popup_missing_without_trigger',
+      confidence: 'low',
+    });
   });
 
   it('builds a replay plan for the selected step and marks replayed evidence pending', () => {

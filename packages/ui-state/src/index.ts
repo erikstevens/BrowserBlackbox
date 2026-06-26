@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 import {
   type BrowserContextSnapshot,
+  type DiagnosisResult,
+  parseDiagnosisResult,
+  parseRequestResponseCapture,
+  parseTimelineEvent,
   checkpointFixture,
   domainVersions,
   recordedStepFixture,
@@ -8,6 +12,8 @@ import {
   type AssertionStep,
   type Checkpoint,
   type RecordedStep,
+  type RequestResponseCapture,
+  type TimelineEvent,
 } from '@browser-blackbox/domain';
 import type { StoredRunSnapshot } from '@browser-blackbox/persistence/src/contracts';
 import type {
@@ -53,6 +59,9 @@ type WorkspaceState = {
   browserRuntime: BrowserRuntimeState;
   runtimeHealth: BrowserRuntimeHealth;
   runtimeEvents: BrowserRuntimeEvent[];
+  captures: RequestResponseCapture[];
+  timeline: TimelineEvent[];
+  diagnosis: DiagnosisResult | null;
   recordingSession: RecordingSession;
   workingCopy: WorkspaceWorkingCopyMetadata;
   replayPlan: ReplayPlan | null;
@@ -106,6 +115,9 @@ export function createInitialWorkspaceState(): WorkspaceState {
       subscriberCount: 0,
     },
     runtimeEvents: [],
+    captures: [],
+    timeline: [],
+    diagnosis: null,
     recordingSession: createWorkspaceRecordingSession(),
     workingCopy: createWorkspaceWorkingCopyMetadata(now, {
       flowId: 'workspace-working-copy',
@@ -114,10 +126,21 @@ export function createInitialWorkspaceState(): WorkspaceState {
     setTargetUrl: (targetUrl) => useWorkspaceStore.setState({ targetUrl }),
     setBrowserRuntime: (browserRuntime) => useWorkspaceStore.setState({ browserRuntime }),
     setRuntimeDiagnostics: (diagnostics) =>
-      useWorkspaceStore.setState({
-        browserRuntime: diagnostics.state,
-        runtimeHealth: diagnostics.health,
-        runtimeEvents: diagnostics.recentEvents,
+      useWorkspaceStore.setState((state) => {
+        const evidence = buildEvidenceFromRuntimeEvents(diagnostics.recentEvents);
+
+        return {
+          browserRuntime: diagnostics.state,
+          runtimeHealth: diagnostics.health,
+          runtimeEvents: diagnostics.recentEvents,
+          captures: evidence.captures,
+          timeline: evidence.timeline,
+          diagnosis: evidence.diagnosis,
+          recordingSession: maybeCaptureRecordedStepsFromRuntimeEvents(
+            state.recordingSession,
+            diagnostics.recentEvents,
+          ),
+        };
       }),
     pushRuntimeUpdate: (update) =>
       useWorkspaceStore.setState((state) => {
@@ -125,11 +148,15 @@ export function createInitialWorkspaceState(): WorkspaceState {
           update.event,
           ...state.runtimeEvents.filter((event) => event.id !== update.event.id),
         ].slice(0, 80);
+        const evidence = buildEvidenceFromRuntimeEvents(runtimeEvents);
 
         return {
           browserRuntime: update.state,
           runtimeHealth: update.health,
           runtimeEvents,
+          captures: evidence.captures,
+          timeline: evidence.timeline,
+          diagnosis: evidence.diagnosis,
           recordingSession: maybeCaptureRecordedStep(state.recordingSession, update.event),
         };
       }),
@@ -229,6 +256,9 @@ export function createInitialWorkspaceState(): WorkspaceState {
         return {
           targetUrl,
           workingCopy: metadata,
+          captures: [],
+          timeline: [],
+          diagnosis: null,
           recordingSession: replaceRecordingSession({
             steps: [],
             checkpoints: [],
@@ -243,6 +273,9 @@ export function createInitialWorkspaceState(): WorkspaceState {
           ...state,
           targetUrl: hydrated.targetUrl,
           workingCopy: hydrated.metadata,
+          captures: hydrated.captures,
+          timeline: hydrated.timeline,
+          diagnosis: hydrated.diagnosis,
           replayPlan: null,
           recordingSession: replaceRecordingSession(
             {
@@ -259,6 +292,9 @@ export function createInitialWorkspaceState(): WorkspaceState {
         browserRuntime: useWorkspaceStore.getState().browserRuntime,
         recordingSession: useWorkspaceStore.getState().recordingSession,
         workingCopy: useWorkspaceStore.getState().workingCopy,
+        captures: useWorkspaceStore.getState().captures,
+        timeline: useWorkspaceStore.getState().timeline,
+        diagnosis: useWorkspaceStore.getState().diagnosis,
       }),
     previewReplayFromStart: () =>
       useWorkspaceStore.setState((state) => ({
@@ -540,6 +576,28 @@ function maybeCaptureRecordedStep(
   };
 }
 
+function maybeCaptureRecordedStepsFromRuntimeEvents(
+  recordingSession: RecordingSession,
+  runtimeEvents: BrowserRuntimeEvent[],
+): RecordingSession {
+  const captureEvents = [...runtimeEvents]
+    .reverse()
+    .filter((event) => event.code === 'recording.step.captured');
+
+  if (captureEvents.length === 0) {
+    return recordingSession;
+  }
+
+  let session = replaceRecordingSession({
+    steps: [],
+    checkpoints: [],
+  });
+  for (const event of captureEvents) {
+    session = maybeCaptureRecordedStep(session, event);
+  }
+  return session;
+}
+
 function buildCapturedStep(event: BrowserRuntimeEvent): RecordedStep | null {
   if (event.code !== 'recording.step.captured') {
     return null;
@@ -664,6 +722,605 @@ function buildCapturedCheckpoint(
   };
 }
 
+function buildEvidenceFromRuntimeEvents(
+  runtimeEvents: BrowserRuntimeEvent[],
+): {
+  captures: RequestResponseCapture[];
+  timeline: TimelineEvent[];
+  diagnosis: DiagnosisResult | null;
+} {
+  const chronologicalEvents = [...runtimeEvents].reverse();
+  const captureMap = new Map<string, RequestResponseCapture>();
+  const requestTimelineIds = new Map<string, string>();
+  const timeline: TimelineEvent[] = [];
+  const assertionEvents: TimelineEvent[] = [];
+  const consoleOrExceptionEvents: TimelineEvent[] = [];
+  const replayFailures: Array<{
+    actionType?: string;
+    assertionKind?: string;
+    detail?: string;
+    id: string;
+    stepId?: string;
+    timestamp: string;
+  }> = [];
+  let latestCapturedStepId: string | undefined;
+
+  for (const event of chronologicalEvents) {
+    if (event.code === 'recording.step.captured') {
+      latestCapturedStepId = `step-captured-${event.id}`;
+      timeline.push(
+        parseTimelineEvent({
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: `timeline-${event.id}`,
+          timestamp: event.timestamp,
+          kind: 'user-action',
+          stepId: latestCapturedStepId,
+          summary: event.message,
+        }),
+      );
+      continue;
+    }
+
+    if (event.code === 'browser.navigation.committed') {
+      timeline.push(
+        parseTimelineEvent({
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: `timeline-${event.id}`,
+          timestamp: event.timestamp,
+          kind: 'navigation',
+          stepId: latestCapturedStepId,
+          summary: event.message,
+        }),
+      );
+      continue;
+    }
+
+    if (event.code === 'console.message' && (event.level === 'warn' || event.level === 'error')) {
+      const timelineEvent = parseTimelineEvent({
+        schemaVersion: domainVersions.domainSchemaVersion,
+        id: `timeline-${event.id}`,
+        timestamp: event.timestamp,
+        kind: event.level === 'error' ? 'exception' : 'console',
+        summary: event.message,
+        severity: event.level === 'error' ? 'error' : 'warning',
+      });
+      timeline.push(timelineEvent);
+      consoleOrExceptionEvents.push(timelineEvent);
+      continue;
+    }
+
+    if (event.code === 'replay.assertion.passed' || event.code === 'replay.assertion.failed') {
+      const stepId = typeof event.data?.stepId === 'string' ? event.data.stepId : null;
+      const assertionKind =
+        typeof event.data?.assertionKind === 'string' ? event.data.assertionKind : null;
+
+      if (!stepId || !assertionKind) {
+        continue;
+      }
+
+      const timelineEvent = parseTimelineEvent({
+        schemaVersion: domainVersions.domainSchemaVersion,
+        id: `timeline-${event.id}`,
+        timestamp: event.timestamp,
+        kind: 'assertion',
+        stepId,
+        summary: event.message,
+        assertionKind: assertionKind as AssertionStep['assertion']['kind'],
+        outcome: event.code === 'replay.assertion.passed' ? 'passed' : 'failed',
+      });
+      timeline.push(timelineEvent);
+      assertionEvents.push(timelineEvent);
+      if (event.code === 'replay.assertion.failed') {
+        replayFailures.push({
+          assertionKind,
+          detail: event.detail,
+          id: `timeline-${event.id}`,
+          stepId,
+          timestamp: event.timestamp,
+        });
+        if (isTimeoutFailure(event.detail)) {
+          timeline.push(
+            parseTimelineEvent({
+              schemaVersion: domainVersions.domainSchemaVersion,
+              id: `timeline-${event.id}-timeout`,
+              timestamp: event.timestamp,
+              kind: 'timeout',
+              stepId,
+              summary: event.detail,
+            }),
+          );
+        }
+      }
+      continue;
+    }
+
+    if (event.code === 'replay.step.failed') {
+      replayFailures.push({
+        actionType:
+          typeof event.data?.actionType === 'string' ? event.data.actionType : undefined,
+        detail: event.detail,
+        id: `timeline-${event.id}`,
+        stepId: typeof event.data?.stepId === 'string' ? event.data.stepId : undefined,
+        timestamp: event.timestamp,
+      });
+      if (isTimeoutFailure(event.detail)) {
+        timeline.push(
+          parseTimelineEvent({
+            schemaVersion: domainVersions.domainSchemaVersion,
+            id: `timeline-${event.id}`,
+            timestamp: event.timestamp,
+            kind: 'timeout',
+            stepId: typeof event.data?.stepId === 'string' ? event.data.stepId : undefined,
+            summary: event.message,
+          }),
+        );
+      }
+      continue;
+    }
+
+    if (event.code === 'replay.execution.failed' && isTimeoutFailure(event.detail)) {
+      timeline.push(
+        parseTimelineEvent({
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: `timeline-${event.id}`,
+          timestamp: event.timestamp,
+          kind: 'timeout',
+          summary: event.detail,
+        }),
+      );
+      continue;
+    }
+
+    if (event.code === 'network.response.body.unavailable') {
+      const requestId = typeof event.data?.requestId === 'string' ? event.data.requestId : null;
+      if (!requestId) {
+        continue;
+      }
+
+      const existing = captureMap.get(requestId);
+      if (!existing?.response) {
+        continue;
+      }
+
+      captureMap.set(
+        requestId,
+        parseRequestResponseCapture({
+          ...existing,
+          response: {
+            ...existing.response,
+            body:
+              normalizeCaptureBody(event.data?.responseBody, 'response') ??
+              unavailableBody(event.detail ?? 'Response body capture was unavailable.'),
+          },
+        }),
+      );
+      continue;
+    }
+
+    if (event.code === 'network.request.started') {
+      const requestId = typeof event.data?.requestId === 'string' ? event.data.requestId : null;
+      const url = typeof event.data?.url === 'string' ? event.data.url : null;
+      const method = typeof event.data?.method === 'string' ? event.data.method : null;
+
+      if (!requestId || !url || !method) {
+        continue;
+      }
+
+      captureMap.set(
+        requestId,
+        parseRequestResponseCapture({
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: requestId,
+          timestamp: event.timestamp,
+          triggeringStepId: latestCapturedStepId,
+          protocol: 'http',
+          request: {
+            url,
+            method,
+            headers: normalizeStringRecord(event.data?.headers),
+            body:
+              normalizeCaptureBody(event.data?.body, 'request') ??
+              unavailableBody('No request body was provided for this request.'),
+          },
+          correlationIds: [],
+          origin: {
+            fromCache: false,
+            fromServiceWorker: false,
+          },
+          retryCount: 0,
+          blocked: false,
+        }),
+      );
+      const timelineEvent = parseTimelineEvent({
+        schemaVersion: domainVersions.domainSchemaVersion,
+        id: `timeline-${event.id}`,
+        timestamp: event.timestamp,
+        kind: 'request',
+        requestId,
+        summary: event.message,
+      });
+      timeline.push(timelineEvent);
+      requestTimelineIds.set(requestId, timelineEvent.id);
+      continue;
+    }
+
+    if (event.code === 'network.response.received') {
+      const requestId = typeof event.data?.requestId === 'string' ? event.data.requestId : null;
+      if (!requestId) {
+        continue;
+      }
+
+      const existing = captureMap.get(requestId);
+      const url =
+        typeof event.data?.url === 'string'
+          ? event.data.url
+          : existing?.request.url ?? 'unknown URL';
+      const method =
+        typeof event.data?.method === 'string'
+          ? event.data.method
+          : existing?.request.method ?? 'UNKNOWN';
+      const status =
+        typeof event.data?.status === 'number' ? event.data.status : 200;
+
+      captureMap.set(
+        requestId,
+        parseRequestResponseCapture({
+          ...(existing ?? {
+            schemaVersion: domainVersions.domainSchemaVersion,
+            id: requestId,
+            timestamp: event.timestamp,
+            protocol: 'http',
+            request: {
+              url,
+              method,
+              headers: {},
+              body: unavailableBody('Request body capture is not wired into the evidence ledger yet.'),
+            },
+            correlationIds: [],
+            origin: {
+              fromCache: false,
+              fromServiceWorker: false,
+            },
+            retryCount: 0,
+            blocked: false,
+          }),
+          durationMs:
+            typeof event.data?.durationMs === 'number' ? event.data.durationMs : existing?.durationMs,
+          correlationIds:
+            normalizeStringArray(event.data?.correlationIds) ?? existing?.correlationIds ?? [],
+          origin: {
+            fromCache: event.data?.fromCache === true,
+            fromServiceWorker: event.data?.fromServiceWorker === true,
+          },
+          response: {
+            status,
+            headers: normalizeStringRecord(event.data?.headers),
+            body:
+              normalizeCaptureBody(event.data?.responseBody, 'response') ??
+              unavailableBody('Response body capture is not wired into the evidence ledger yet.'),
+          },
+          timings: normalizeCaptureTimings(event.data?.timings) ?? existing?.timings,
+        }),
+      );
+      continue;
+    }
+
+    if (event.code === 'network.request.failed') {
+      const requestId = typeof event.data?.requestId === 'string' ? event.data.requestId : null;
+      if (!requestId) {
+        continue;
+      }
+
+      const existing = captureMap.get(requestId);
+      const url =
+        typeof event.data?.url === 'string'
+          ? event.data.url
+          : existing?.request.url ?? 'unknown URL';
+      const method =
+        typeof event.data?.method === 'string'
+          ? event.data.method
+          : existing?.request.method ?? 'UNKNOWN';
+
+      captureMap.set(
+        requestId,
+        parseRequestResponseCapture({
+          ...(existing ?? {
+            schemaVersion: domainVersions.domainSchemaVersion,
+            id: requestId,
+            timestamp: event.timestamp,
+            protocol: 'http',
+            request: {
+              url,
+              method,
+              headers: normalizeStringRecord(event.data?.headers),
+              body:
+                normalizeCaptureBody(event.data?.body, 'request') ??
+                unavailableBody('Request body capture is not wired into the evidence ledger yet.'),
+            },
+            correlationIds: [],
+            origin: {
+              fromCache: false,
+              fromServiceWorker: false,
+            },
+            retryCount: 0,
+            blocked: false,
+          }),
+          failure: {
+            code: event.code,
+            message: event.detail ?? event.message,
+          },
+          request: {
+            ...(existing?.request ?? {
+              url,
+              method,
+              headers: {},
+              body: unavailableBody('Request body capture is not wired into the evidence ledger yet.'),
+            }),
+            headers: normalizeStringRecord(event.data?.headers),
+            body:
+              normalizeCaptureBody(event.data?.body, 'request') ??
+              existing?.request.body ??
+              unavailableBody('Request body capture is not wired into the evidence ledger yet.'),
+          },
+        }),
+      );
+      continue;
+    }
+
+    if (event.code === 'network.response.body.captured') {
+      const requestId = typeof event.data?.requestId === 'string' ? event.data.requestId : null;
+      if (!requestId) {
+        continue;
+      }
+
+      const existing = captureMap.get(requestId);
+      if (!existing?.response) {
+        continue;
+      }
+
+      captureMap.set(
+        requestId,
+        parseRequestResponseCapture({
+          ...existing,
+          response: {
+            ...existing.response,
+            body:
+              normalizeCaptureBody(event.data?.responseBody, 'response') ??
+              existing.response.body,
+          },
+        }),
+      );
+      continue;
+    }
+
+    if (event.code === 'replay.checkpoint.captured') {
+      const checkpointId =
+        typeof event.data?.checkpointId === 'string' ? event.data.checkpointId : null;
+      if (!checkpointId) {
+        continue;
+      }
+
+      timeline.push(
+        parseTimelineEvent({
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: `timeline-${event.id}`,
+          timestamp: event.timestamp,
+          kind: 'checkpoint',
+          checkpointId,
+          summary: event.message,
+          status: 'created',
+        }),
+      );
+      continue;
+    }
+
+    if (event.code === 'replay.checkpoint.restored') {
+      const checkpointId =
+        typeof event.data?.checkpointId === 'string' ? event.data.checkpointId : null;
+      if (!checkpointId) {
+        continue;
+      }
+
+      timeline.push(
+        parseTimelineEvent({
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: `timeline-${event.id}`,
+          timestamp: event.timestamp,
+          kind: 'checkpoint',
+          checkpointId,
+          summary: event.message,
+          status: 'reused',
+        }),
+      );
+    }
+  }
+
+  const captures = [...captureMap.values()].sort((left, right) =>
+    left.timestamp.localeCompare(right.timestamp),
+  );
+
+  return {
+    captures,
+    timeline: timeline.sort((left, right) => left.timestamp.localeCompare(right.timestamp)),
+    diagnosis: buildDiagnosisResult({
+      assertionEvents,
+      captures,
+      consoleOrExceptionEvents,
+      replayFailures,
+      requestTimelineIds,
+    }),
+  };
+}
+
+function buildDiagnosisResult(input: {
+  assertionEvents: TimelineEvent[];
+  captures: RequestResponseCapture[];
+  consoleOrExceptionEvents: TimelineEvent[];
+  replayFailures: Array<{
+    actionType?: string;
+    assertionKind?: string;
+    detail?: string;
+    id: string;
+    stepId?: string;
+    timestamp: string;
+  }>;
+  requestTimelineIds: Map<string, string>;
+}): DiagnosisResult | null {
+  const findings: DiagnosisResult['findings'] = [];
+  const failedAssertion = [...input.assertionEvents]
+    .reverse()
+    .find((event) => event.kind === 'assertion' && event.outcome === 'failed');
+
+  if (failedAssertion && failedAssertion.kind === 'assertion') {
+    const blockingCapture = [...input.captures]
+      .reverse()
+      .find(
+        (capture) =>
+          capture.timestamp <= failedAssertion.timestamp &&
+          (capture.failure !== undefined ||
+            (capture.response?.status !== undefined && capture.response.status >= 400)),
+      );
+    const consoleError = [...input.consoleOrExceptionEvents]
+      .reverse()
+      .find(
+        (event) =>
+          event.timestamp <= failedAssertion.timestamp &&
+          ((event.kind === 'exception' && event.severity === 'error') ||
+            (event.kind === 'console' && event.severity === 'error')),
+      );
+
+    if (blockingCapture) {
+      findings.push({
+        schemaVersion: domainVersions.domainSchemaVersion,
+        ruleId: 'assertion_blocked_by_failed_request',
+        confidence: blockingCapture.failure ? 'high' : 'medium',
+        evidenceEventIds: [
+          input.requestTimelineIds.get(blockingCapture.id) ?? `request-${blockingCapture.id}`,
+          failedAssertion.id,
+        ],
+        affectedWindow: {
+          startedAt: blockingCapture.timestamp,
+          endedAt: failedAssertion.timestamp,
+        },
+        summary: `The assertion failed after ${blockingCapture.request.method} ${blockingCapture.request.url} returned blocking network evidence.`,
+      });
+    }
+
+    if (consoleError && consoleError.kind !== 'request' && consoleError.kind !== 'assertion') {
+      findings.push({
+        schemaVersion: domainVersions.domainSchemaVersion,
+        ruleId: 'assertion_blocked_by_console_error',
+        confidence: 'medium',
+        evidenceEventIds: [consoleError.id, failedAssertion.id],
+        affectedWindow: {
+          startedAt: consoleError.timestamp,
+          endedAt: failedAssertion.timestamp,
+        },
+        summary: `The assertion failed after a console or exception error was observed: ${consoleError.summary}`,
+      });
+    }
+
+    if (findings.length === 0) {
+      findings.push({
+        schemaVersion: domainVersions.domainSchemaVersion,
+        ruleId: 'assertion_blocked_by_missing_dom_transition',
+        confidence: 'low',
+        evidenceEventIds: [failedAssertion.id],
+        affectedWindow: {
+          startedAt: failedAssertion.timestamp,
+          endedAt: failedAssertion.timestamp,
+        },
+        summary: `The assertion failed without a stronger cataloged blocker, so the expected DOM transition likely never occurred.`,
+      });
+    }
+  } else {
+    const failedCapture = input.captures.find(
+      (capture) => capture.failure !== undefined || (capture.response?.status ?? 0) >= 400,
+    );
+    if (failedCapture) {
+      findings.push({
+        schemaVersion: domainVersions.domainSchemaVersion,
+        ruleId: 'navigation_blocked_by_request_failure',
+        confidence: failedCapture.failure ? 'medium' : 'low',
+        evidenceEventIds: [
+          input.requestTimelineIds.get(failedCapture.id) ?? `request-${failedCapture.id}`,
+        ],
+        affectedWindow: {
+          startedAt: failedCapture.timestamp,
+          endedAt: failedCapture.timestamp,
+        },
+        summary: `A network request failed during replay evidence capture for ${failedCapture.request.url}.`,
+      });
+    }
+  }
+
+  const failedPopupWait = input.replayFailures.find(
+    (failure) => failure.actionType === 'wait-for-popup',
+  );
+  if (failedPopupWait) {
+    findings.push({
+      schemaVersion: domainVersions.domainSchemaVersion,
+      ruleId: 'popup_missing_without_trigger',
+      confidence: 'low',
+      evidenceEventIds: [failedPopupWait.id],
+      affectedWindow: {
+        startedAt: failedPopupWait.timestamp,
+        endedAt: failedPopupWait.timestamp,
+      },
+      summary: 'Replay waited for a popup, but no popup was observed within the expected window.',
+    });
+  }
+
+  const failedDownloadWait = input.replayFailures.find(
+    (failure) => failure.actionType === 'wait-for-download',
+  );
+  if (failedDownloadWait) {
+    findings.push({
+      schemaVersion: domainVersions.domainSchemaVersion,
+      ruleId: 'download_missing_without_trigger',
+      confidence: 'low',
+      evidenceEventIds: [failedDownloadWait.id],
+      affectedWindow: {
+        startedAt: failedDownloadWait.timestamp,
+        endedAt: failedDownloadWait.timestamp,
+      },
+      summary: 'Replay waited for a download, but no download was observed within the expected window.',
+    });
+  }
+
+  if (findings.length === 0) {
+    return null;
+  }
+
+  const orderedFindings = findings.sort(compareDiagnosisFindings);
+  return parseDiagnosisResult({
+    schemaVersion: domainVersions.domainSchemaVersion,
+    catalogVersion: domainVersions.diagnosisRuleCatalogVersion,
+    findings: orderedFindings,
+  });
+}
+
+function compareDiagnosisFindings(
+  left: DiagnosisResult['findings'][number],
+  right: DiagnosisResult['findings'][number],
+): number {
+  const confidenceRank = {
+    high: 0,
+    medium: 1,
+    low: 2,
+  } as const;
+
+  return (
+    confidenceRank[left.confidence] - confidenceRank[right.confidence] ||
+    left.affectedWindow.startedAt.localeCompare(right.affectedWindow.startedAt) ||
+    left.ruleId.localeCompare(right.ruleId)
+  );
+}
+
+function isTimeoutFailure(detail: string | undefined): detail is string {
+  return typeof detail === 'string' && /timed out|timeout/i.test(detail);
+}
+
 function asRecord(
   value: unknown,
 ): Record<string, string | boolean | undefined> | null {
@@ -672,6 +1329,114 @@ function asRecord(
   }
 
   return null;
+}
+
+function normalizeStringRecord(value: unknown): Record<string, string> {
+  if (typeof value !== 'object' || value === null) {
+    return {};
+  }
+
+  return Object.entries(value as Record<string, unknown>).reduce<Record<string, string>>(
+    (record, [key, entry]) => {
+      if (typeof entry === 'string') {
+        record[key] = entry;
+      }
+      return record;
+    },
+    {},
+  );
+}
+
+function normalizeStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value.filter((entry): entry is string => typeof entry === 'string');
+}
+
+function normalizeCaptureTimings(
+  value: unknown,
+): RequestResponseCapture['timings'] | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+
+  const timings = value as Record<string, unknown>;
+  const normalized: NonNullable<RequestResponseCapture['timings']> = {};
+
+  if (typeof timings.dnsMs === 'number') {
+    normalized.dnsMs = timings.dnsMs;
+  }
+  if (typeof timings.connectMs === 'number') {
+    normalized.connectMs = timings.connectMs;
+  }
+  if (typeof timings.tlsMs === 'number') {
+    normalized.tlsMs = timings.tlsMs;
+  }
+  if (typeof timings.requestMs === 'number') {
+    normalized.requestMs = timings.requestMs;
+  }
+  if (typeof timings.responseMs === 'number') {
+    normalized.responseMs = timings.responseMs;
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function unavailableBody(reason: string): RequestResponseCapture['request']['body'] {
+  return {
+    state: 'unavailable',
+    reason,
+  };
+}
+
+function normalizeCaptureBody(
+  value: unknown,
+  channel: 'request' | 'response',
+): RequestResponseCapture['request']['body'] | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+
+  const body = value as Record<string, unknown>;
+  if (body.state === 'full' && typeof body.text === 'string') {
+    return {
+      state: 'full',
+      ...(typeof body.contentType === 'string' ? { contentType: body.contentType } : {}),
+      text: body.text,
+    };
+  }
+
+  if (
+    body.state === 'redacted' &&
+    typeof body.text === 'string' &&
+    Array.isArray(body.redactionRuleIds)
+  ) {
+    return {
+      state: 'redacted',
+      ...(typeof body.contentType === 'string' ? { contentType: body.contentType } : {}),
+      text: body.text,
+      redactionRuleIds: body.redactionRuleIds.filter(
+        (entry): entry is string => typeof entry === 'string',
+      ),
+    };
+  }
+
+  if (
+    (body.state === 'excluded' ||
+      body.state === 'unavailable' ||
+      body.state === 'truncated') &&
+    typeof body.reason === 'string'
+  ) {
+    return {
+      state: body.state,
+      ...(typeof body.contentType === 'string' ? { contentType: body.contentType } : {}),
+      reason: body.reason,
+    };
+  }
+
+  return unavailableBody(`${channel} body capture payload was malformed.`);
 }
 
 export * from './recording-session';

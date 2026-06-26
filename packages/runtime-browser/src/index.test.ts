@@ -17,6 +17,7 @@ function createConnectorStub() {
   const navigatedUrls: string[] = [];
   const actionLog: string[] = [];
   const restoredCookies: Array<{ name: string; value: string; domain: string; path: string; expires: number; httpOnly: boolean; secure: boolean; sameSite: 'Strict' | 'Lax' | 'None' }> = [];
+  const responseBodies = new Map<string, { body: string; base64Encoded: boolean }>();
   let disconnected = false;
   let detached = false;
   let pageUrl = 'about:blank';
@@ -24,6 +25,9 @@ function createConnectorStub() {
   let currentOrigin = 'about:blank';
   const localStorageByOrigin = new Map<string, Record<string, string>>();
   const sessionStorageByOrigin = new Map<string, Record<string, string>>();
+  let waitForEventHandler:
+    | ((event: 'dialog' | 'download' | 'popup') => Promise<unknown>)
+    | null = null;
   let cdpEventListener:
     | ((data: { method: string; params?: Record<string, unknown> }) => void)
     | null = null;
@@ -76,7 +80,10 @@ function createConnectorStub() {
     dragAndDrop: async (source: string, target: string) => {
       actionLog.push(`drag:${source}->${target}`);
     },
-    waitForEvent: async () => {
+    waitForEvent: async (event: 'dialog' | 'download' | 'popup') => {
+      if (waitForEventHandler) {
+        return waitForEventHandler(event);
+      }
       throw new Error('waitForEvent not configured in this stub');
     },
     keyboard: {
@@ -122,8 +129,15 @@ function createConnectorStub() {
     on: (_event: 'event', listener: (data: { method: string; params?: Record<string, unknown> }) => void) => {
       cdpEventListener = listener;
     },
-    send: async (method: string) => {
+    send: async (method: string, params?: Record<string, unknown>) => {
       sentCommands.push(method);
+      if (method === 'Network.getResponseBody') {
+        const requestId = typeof params?.requestId === 'string' ? params.requestId : '';
+        return responseBodies.get(requestId) ?? {
+          body: '',
+          base64Encoded: false,
+        };
+      }
       return undefined;
     },
   };
@@ -181,6 +195,21 @@ function createConnectorStub() {
       ) => {
         localStorageByOrigin.set(origin, { ...localStorage });
         sessionStorageByOrigin.set(origin, { ...sessionStorage });
+      },
+      setResponseBody: (
+        requestId: string,
+        body: string,
+        base64Encoded = false,
+      ) => {
+        responseBodies.set(requestId, {
+          body,
+          base64Encoded,
+        });
+      },
+      setWaitForEventHandler: (
+        handler: (event: 'dialog' | 'download' | 'popup') => Promise<unknown>,
+      ) => {
+        waitForEventHandler = handler;
       },
     },
   };
@@ -245,18 +274,60 @@ describe('BrowserSessionManager', () => {
     const connectorStub = createConnectorStub();
     const manager = new BrowserSessionManager(connectorStub.connector);
     const observedMessages: string[] = [];
+    const observedEvents: Array<{ code: string; data?: Record<string, unknown> }> = [];
     manager.registerSurface(createSurfaceStub());
     manager.subscribe((event) => {
       observedMessages.push(event.message);
+      observedEvents.push({
+        code: event.code,
+        data: event.data,
+      });
     });
 
     await manager.launch({ targetUrl: 'https://example.com/' });
+    connectorStub.state.setResponseBody(
+      'request-1',
+      JSON.stringify({ ok: true, token: 'opaque-token' }),
+    );
     connectorStub.state.emitCdpEvent('Network.requestWillBeSent', {
+      requestId: 'request-1',
       request: {
         method: 'GET',
         url: 'https://example.com/api/health',
+        headers: {
+          'X-Request-Id': 'req-123',
+        },
+        postData: JSON.stringify({
+          password: 'secret-password',
+        }),
       },
     });
+    connectorStub.state.emitCdpEvent('Network.responseReceived', {
+      requestId: 'request-1',
+      response: {
+        status: 200,
+        url: 'https://example.com/api/health',
+        protocol: 'h2',
+        fromDiskCache: true,
+        fromServiceWorker: false,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Request-Id': 'req-123',
+        },
+        timing: {
+          dnsStart: 0,
+          dnsEnd: 5,
+          connectStart: 5,
+          connectEnd: 15,
+          sslStart: 15,
+          sslEnd: 25,
+          sendStart: 25,
+          sendEnd: 35,
+          receiveHeadersEnd: 80,
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(observedMessages).toContain(
       'Launching managed browser session for https://example.com/.',
@@ -265,12 +336,54 @@ describe('BrowserSessionManager', () => {
       'Playwright attached to the embedded Chromium target.',
     );
     expect(observedMessages).toContain('GET https://example.com/api/health');
+    expect(observedEvents.find((event) => event.code === 'network.request.started')?.data)
+      .toMatchObject({
+        body: {
+          state: 'redacted',
+          redactionRuleIds: ['rule-password'],
+        },
+        headers: {
+          'x-request-id': 'req-123',
+        },
+      });
+    expect(observedEvents.find((event) => event.code === 'network.response.received')?.data)
+      .toMatchObject({
+        correlationIds: ['x-request-id:req-123'],
+        durationMs: 80,
+        fromCache: true,
+        fromServiceWorker: false,
+        headers: {
+          'content-type': 'application/json',
+          'x-request-id': 'req-123',
+        },
+        protocol: 'h2',
+        status: 200,
+        timings: {
+          dnsMs: 5,
+          connectMs: 10,
+          tlsMs: 10,
+          requestMs: 10,
+          responseMs: 45,
+        },
+      });
+    expect(observedEvents.find((event) => event.code === 'network.response.body.captured')?.data)
+      .toMatchObject({
+        requestId: 'request-1',
+        responseBody: {
+          state: 'redacted',
+          redactionRuleIds: ['rule-token'],
+        },
+      });
   });
 
   it('executes supported replay steps against the attached page', async () => {
     const connectorStub = createConnectorStub();
     const manager = new BrowserSessionManager(connectorStub.connector);
+    const observedCodes: string[] = [];
     manager.registerSurface(createSurfaceStub());
+    manager.subscribe((event) => {
+      observedCodes.push(event.code);
+    });
     await manager.launch({ targetUrl: 'https://example.com/' });
 
     const steps: RecordedStep[] = [
@@ -373,6 +486,66 @@ describe('BrowserSessionManager', () => {
       'fill:label:Email:qa@example.test',
       'click:button:Sign in',
     ]);
+    expect(observedCodes).toContain('replay.assertion.passed');
+  });
+
+  it('emits replay failure events for missing popup triggers', async () => {
+    const connectorStub = createConnectorStub();
+    const manager = new BrowserSessionManager(connectorStub.connector);
+    const observedEvents: Array<{ code: string; detail?: string; data?: Record<string, unknown> }> =
+      [];
+    manager.registerSurface(createSurfaceStub());
+    manager.subscribe((event) => {
+      observedEvents.push({
+        code: event.code,
+        detail: event.detail,
+        data: event.data,
+      });
+    });
+    connectorStub.state.setWaitForEventHandler(async (event) => {
+      throw new Error(`${event} timed out`);
+    });
+    await manager.launch({ targetUrl: 'https://example.com/' });
+
+    await expect(
+      manager.executeReplay({
+        targetUrl: 'https://example.com/',
+        steps: [
+          {
+            schemaVersion: domainVersions.domainSchemaVersion,
+            id: 'step-wait-popup',
+            title: 'Wait for popup',
+            kind: 'action',
+            status: 'active',
+            evidenceState: 'stale',
+            createdAt: '2026-06-25T12:00:00.000Z',
+            updatedAt: '2026-06-25T12:00:00.000Z',
+            dependencyStepIds: [],
+            invalidatesEvidenceAfter: true,
+            action: {
+              type: 'wait-for-popup',
+            },
+          },
+        ],
+        checkpoints: [],
+        plan: {
+          mode: 'from-start',
+          targetStepId: 'step-wait-popup',
+          checkpointId: null,
+          startStrategy: 'start',
+          executionStepIds: ['step-wait-popup'],
+        },
+      }),
+    ).rejects.toThrow('popup timed out');
+
+    expect(observedEvents.find((event) => event.code === 'replay.step.failed')).toMatchObject({
+      detail: 'popup timed out',
+      data: {
+        actionType: 'wait-for-popup',
+        stepId: 'step-wait-popup',
+        stepKind: 'action',
+      },
+    });
   });
 
   it('restores and resumes from a compatible checkpoint snapshot', async () => {

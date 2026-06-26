@@ -1,8 +1,11 @@
 import {
   type ArtifactManifest,
   type Checkpoint,
+  type DiagnosisResult,
   domainVersions,
   type RecordedStep,
+  type RequestResponseCapture,
+  type TimelineEvent,
 } from '@browser-blackbox/domain';
 import type { StoredRunSnapshot } from '@browser-blackbox/persistence/src/contracts';
 import type { BrowserRuntimeState } from '@browser-blackbox/runtime-browser';
@@ -22,6 +25,9 @@ export type WorkspacePersistenceState = {
   browserRuntime: BrowserRuntimeState;
   recordingSession: RecordingSession;
   workingCopy: WorkspaceWorkingCopyMetadata;
+  captures: RequestResponseCapture[];
+  timeline: TimelineEvent[];
+  diagnosis: DiagnosisResult | null;
 };
 
 export function createWorkspaceWorkingCopyMetadata(
@@ -78,12 +84,12 @@ export function createStoredRunSnapshotFromWorkspace(
     },
     manifest,
     steps: state.recordingSession.present.steps,
-    captures: [],
+    captures: state.captures,
     redactionRules: [],
     simulationRules: [],
-    timeline: [],
+    timeline: state.timeline,
     checkpoints: state.recordingSession.present.checkpoints,
-    diagnosis: null,
+    diagnosis: state.diagnosis,
   };
 }
 
@@ -91,7 +97,10 @@ export function hydrateWorkspaceFromStoredRunSnapshot(snapshot: StoredRunSnapsho
   metadata: WorkspaceWorkingCopyMetadata;
   targetUrl: string;
   steps: RecordedStep[];
+  captures: RequestResponseCapture[];
+  timeline: TimelineEvent[];
   checkpoints: Checkpoint[];
+  diagnosis: DiagnosisResult | null;
 } {
   return {
     metadata: {
@@ -104,7 +113,10 @@ export function hydrateWorkspaceFromStoredRunSnapshot(snapshot: StoredRunSnapsho
     },
     targetUrl: snapshot.session.targetUrl,
     steps: snapshot.steps,
+    captures: snapshot.captures,
+    timeline: snapshot.timeline,
     checkpoints: snapshot.checkpoints,
+    diagnosis: snapshot.diagnosis,
   };
 }
 

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import type {
   Assertion,
   BrowserContextSnapshot,
@@ -97,7 +98,33 @@ export class BrowserSessionManager {
   private cdpSession: ConnectedCdpSession | null = null;
   private page: ConnectedPage | null = null;
   private listeners = new Set<(event: BrowserRuntimeEvent) => void>();
-  private requestMap = new Map<string, { method: string; url: string }>();
+  private requestMap = new Map<
+    string,
+    {
+      requestBody?: CaptureBodyPayload;
+      requestContentType?: string;
+      method: string;
+      startedAtMs: number;
+      requestHeaders: Record<string, string>;
+      url: string;
+      fromCache?: boolean;
+      responseBody?: CaptureBodyPayload;
+      responseContentType?: string;
+      responseHeaders?: Record<string, string>;
+      responseStatus?: number;
+      responseProtocol?: string;
+      timings?: {
+        dnsMs?: number;
+        connectMs?: number;
+        tlsMs?: number;
+        requestMs?: number;
+        responseMs?: number;
+      };
+      correlationIds?: string[];
+      fromServiceWorker?: boolean;
+      durationMs?: number;
+    }
+  >();
   private surface: ManagedBrowserSurface | null = null;
   private state: BrowserRuntimeState = DEFAULT_STATE;
 
@@ -338,13 +365,46 @@ export class BrowserSessionManager {
           continue;
         }
 
-        await this.executeStep(step);
+        try {
+          await this.executeStep(step);
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          this.emitEvent(
+            'replay',
+            step.kind === 'assertion' ? 'replay.assertion.failed' : 'replay.step.failed',
+            'error',
+            `Replay failed at ${step.title}.`,
+            'runtime_manager',
+            {
+              ...(step.kind === 'action'
+                ? { actionType: step.action.type }
+                : { assertionKind: step.assertion.kind }),
+              stepId: step.id,
+              stepKind: step.kind,
+            },
+            detail,
+          );
+          throw error;
+        }
         completedStepIds.push(step.id);
         this.state = {
           ...this.state,
           pageUrl: this.page.url(),
           lastError: null,
         };
+        if (step.kind === 'assertion') {
+          this.emitEvent(
+            'replay',
+            'replay.assertion.passed',
+            'info',
+            `Assertion passed for ${step.title}.`,
+            'runtime_manager',
+            {
+              assertionKind: step.assertion.kind,
+              stepId: step.id,
+            },
+          );
+        }
         this.emitEvent(
           'replay',
           'replay.step.completed',
@@ -495,9 +555,16 @@ export class BrowserSessionManager {
       const requestId = typeof params?.requestId === 'string' ? params.requestId : null;
       const requestMethod = typeof request?.method === 'string' ? request.method : 'UNKNOWN';
       const requestUrl = typeof request?.url === 'string' ? request.url : 'unknown URL';
+      const requestHeaders = normalizeHeaderRecord(request?.headers);
+      const requestContentType = requestHeaders['content-type'];
+      const requestBody = captureRequestBody(request, requestContentType);
       if (requestId !== null) {
         this.requestMap.set(requestId, {
+          startedAtMs: Date.now(),
           method: requestMethod,
+          requestBody,
+          requestContentType,
+          requestHeaders,
           url: requestUrl,
         });
       }
@@ -508,11 +575,27 @@ export class BrowserSessionManager {
         `${requestMethod} ${requestUrl}`,
         'cdp',
         {
+          headers: requestHeaders,
+          body: requestBody,
           method: requestMethod,
           requestId,
           url: requestUrl,
         },
       );
+      return;
+    }
+
+    if (method === 'Network.requestServedFromCache') {
+      const requestId = typeof params?.requestId === 'string' ? params.requestId : null;
+      if (requestId !== null) {
+        const current = this.requestMap.get(requestId);
+        if (current) {
+          this.requestMap.set(requestId, {
+            ...current,
+            fromCache: true,
+          });
+        }
+      }
       return;
     }
 
@@ -522,6 +605,32 @@ export class BrowserSessionManager {
       const requestRecord = requestId !== null ? this.requestMap.get(requestId) : undefined;
       const status = typeof response?.status === 'number' ? response.status : 'unknown';
       const responseUrl = typeof response?.url === 'string' ? response.url : 'unknown URL';
+      const responseHeaders = normalizeHeaderRecord(response?.headers);
+      const timings = normalizeNetworkTimings(response?.timing);
+      const correlationIds = collectCorrelationIds(
+        requestRecord?.requestHeaders ?? {},
+        responseHeaders,
+      );
+      const durationMs =
+        timings?.responseMs !== undefined
+          ? totalDurationMs(timings)
+          : requestRecord
+            ? Math.max(0, Date.now() - requestRecord.startedAtMs)
+            : undefined;
+      if (requestId !== null && requestRecord) {
+        this.requestMap.set(requestId, {
+          ...requestRecord,
+          correlationIds,
+          durationMs,
+          fromServiceWorker: response?.fromServiceWorker === true,
+          responseContentType: responseHeaders['content-type'],
+          responseHeaders,
+          responseProtocol:
+            typeof response?.protocol === 'string' ? response.protocol : undefined,
+          responseStatus: typeof response?.status === 'number' ? response.status : undefined,
+          timings,
+        });
+      }
       this.emitEvent(
         'network',
         'network.response.received',
@@ -529,12 +638,26 @@ export class BrowserSessionManager {
         `Response ${status} from ${responseUrl}`,
         'cdp',
         {
+          correlationIds,
+          durationMs,
+          fromCache:
+            requestRecord?.fromCache === true ||
+            response?.fromDiskCache === true ||
+            response?.fromPrefetchCache === true,
+          fromServiceWorker: response?.fromServiceWorker === true,
+          headers: responseHeaders,
           method: requestRecord?.method ?? null,
+          protocol:
+            typeof response?.protocol === 'string' ? response.protocol : null,
           requestId,
           status,
+          timings,
           url: responseUrl,
         },
       );
+      if (requestId !== null) {
+        void this.emitResponseBodyEvent(requestId, responseUrl);
+      }
       return;
     }
 
@@ -551,6 +674,7 @@ export class BrowserSessionManager {
         'cdp',
         {
           errorText,
+          headers: requestRecord?.requestHeaders ?? {},
           method: requestRecord?.method ?? null,
           requestId,
           url: failedUrl,
@@ -850,6 +974,60 @@ export class BrowserSessionManager {
     }
   }
 
+  private async emitResponseBodyEvent(
+    requestId: string,
+    responseUrl: string,
+  ): Promise<void> {
+    if (this.cdpSession === null) {
+      return;
+    }
+
+    const requestRecord = this.requestMap.get(requestId);
+    if (!requestRecord) {
+      return;
+    }
+
+    try {
+      const bodyResult = await maybeGetResponseBody(this.cdpSession, requestId);
+      if (bodyResult === null) {
+        return;
+      }
+
+      const responseBody = captureTextBody(
+        decodeResponseBody(bodyResult.body, bodyResult.base64Encoded),
+        requestRecord.responseContentType,
+        false,
+      );
+      this.requestMap.set(requestId, {
+        ...requestRecord,
+        responseBody,
+      });
+      this.emitEvent(
+        'network',
+        'network.response.body.captured',
+        'info',
+        `Captured response body for ${responseUrl}.`,
+        'runtime_manager',
+        {
+          requestId,
+          responseBody,
+        },
+      );
+    } catch (error) {
+      this.emitEvent(
+        'network',
+        'network.response.body.unavailable',
+        'warn',
+        `Response body was unavailable for ${responseUrl}.`,
+        'runtime_manager',
+        {
+          requestId,
+        },
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
   private async captureCheckpointSnapshot(): Promise<BrowserContextSnapshot> {
     if (this.page === null) {
       throw new Error('Managed page is not available for checkpoint capture.');
@@ -950,6 +1128,24 @@ const defaultConnector: PlaywrightConnector = {
   connect: async (endpointUrl) => chromium.connectOverCDP(endpointUrl) as unknown as ConnectedBrowser,
 };
 
+type CaptureBodyPayload =
+  | {
+      state: 'full';
+      contentType?: string;
+      text: string;
+    }
+  | {
+      state: 'redacted';
+      contentType?: string;
+      text: string;
+      redactionRuleIds: string[];
+    }
+  | {
+      state: 'excluded' | 'unavailable' | 'truncated';
+      contentType?: string;
+      reason: string;
+    };
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value === 'object' && value !== null) {
     return value as Record<string, unknown>;
@@ -958,9 +1154,250 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return null;
 }
 
+async function maybeGetResponseBody(
+  cdpSession: ConnectedCdpSession,
+  requestId: string,
+): Promise<{ body: string; base64Encoded: boolean } | null> {
+  const result = await cdpSession.send('Network.getResponseBody', {
+    requestId,
+  });
+
+  const record = asRecord(result);
+  if (!record || typeof record.body !== 'string') {
+    return null;
+  }
+
+  return {
+    body: record.body,
+    base64Encoded: record.base64Encoded === true,
+  };
+}
+
 function globToRegExp(glob: string): RegExp {
   const escaped = glob.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
   return new RegExp(`^${escaped.replace(/\*/g, '.*')}$`);
+}
+
+function normalizeHeaderRecord(value: unknown): Record<string, string> {
+  if (typeof value !== 'object' || value === null) {
+    return {};
+  }
+
+  return Object.entries(value as Record<string, unknown>).reduce<Record<string, string>>(
+    (headers, [key, entry]) => {
+      if (typeof entry === 'string') {
+        headers[key.toLowerCase()] = entry;
+      } else if (typeof entry === 'number' || typeof entry === 'boolean') {
+        headers[key.toLowerCase()] = String(entry);
+      }
+      return headers;
+    },
+    {},
+  );
+}
+
+function normalizeNetworkTimings(
+  value: unknown,
+):
+  | {
+      dnsMs?: number;
+      connectMs?: number;
+      tlsMs?: number;
+      requestMs?: number;
+      responseMs?: number;
+    }
+  | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+
+  const timing = value as Record<string, unknown>;
+  const result = {
+    dnsMs: positiveDiff(timing.dnsStart, timing.dnsEnd),
+    connectMs: positiveDiff(timing.connectStart, timing.connectEnd),
+    tlsMs: positiveDiff(timing.sslStart, timing.sslEnd),
+    requestMs: positiveDiff(timing.sendStart, timing.sendEnd),
+    responseMs: positiveDiff(timing.sendEnd, timing.receiveHeadersEnd),
+  };
+
+  return Object.values(result).some((entry) => entry !== undefined) ? result : undefined;
+}
+
+function positiveDiff(start: unknown, end: unknown): number | undefined {
+  if (typeof start !== 'number' || typeof end !== 'number') {
+    return undefined;
+  }
+
+  if (start < 0 || end < 0 || end < start) {
+    return undefined;
+  }
+
+  return Math.round((end - start) * 100) / 100;
+}
+
+function totalDurationMs(timings: {
+  dnsMs?: number;
+  connectMs?: number;
+  tlsMs?: number;
+  requestMs?: number;
+  responseMs?: number;
+}): number | undefined {
+  const values = [timings.dnsMs, timings.connectMs, timings.tlsMs, timings.requestMs, timings.responseMs]
+    .filter((value): value is number => value !== undefined);
+
+  if (values.length === 0) {
+    return undefined;
+  }
+
+  return Math.round(values.reduce((total, value) => total + value, 0) * 100) / 100;
+}
+
+function collectCorrelationIds(
+  requestHeaders: Record<string, string>,
+  responseHeaders: Record<string, string>,
+): string[] {
+  const keys = ['x-request-id', 'x-correlation-id', 'traceparent'];
+  const seen = new Set<string>();
+  const values: string[] = [];
+
+  for (const key of keys) {
+    for (const headers of [requestHeaders, responseHeaders]) {
+      const value = headers[key];
+      if (!value) {
+        continue;
+      }
+
+      const entry = `${key}:${value}`;
+      if (seen.has(entry)) {
+        continue;
+      }
+      seen.add(entry);
+      values.push(entry);
+    }
+  }
+
+  return values;
+}
+
+function captureRequestBody(
+  request: Record<string, unknown> | null,
+  contentType?: string,
+): CaptureBodyPayload {
+  const postData = typeof request?.postData === 'string' ? request.postData : null;
+  if (postData === null) {
+    return {
+      state: 'unavailable',
+      contentType,
+      reason: 'No request body was provided for this request.',
+    };
+  }
+
+  return captureTextBody(postData, contentType, true);
+}
+
+function captureTextBody(
+  text: string,
+  contentType: string | undefined,
+  requestScoped: boolean,
+): CaptureBodyPayload {
+  if (!isTextualContentType(contentType)) {
+    return {
+      state: 'excluded',
+      contentType,
+      reason: 'Binary or unsupported content type is excluded by default.',
+    };
+  }
+
+  if (text.length > 100_000) {
+    return {
+      state: 'truncated',
+      contentType,
+      reason: 'Body exceeded the current capture size limit.',
+    };
+  }
+
+  const redacted = redactSensitiveText(text, contentType, requestScoped);
+  if (redacted.redactionRuleIds.length > 0) {
+    return {
+      state: 'redacted',
+      contentType,
+      text: redacted.text,
+      redactionRuleIds: redacted.redactionRuleIds,
+    };
+  }
+
+  return {
+    state: 'full',
+    contentType,
+    text,
+  };
+}
+
+function decodeResponseBody(body: string, base64Encoded: boolean): string {
+  if (!base64Encoded) {
+    return body;
+  }
+
+  return Buffer.from(body, 'base64').toString('utf8');
+}
+
+function isTextualContentType(contentType?: string): boolean {
+  if (!contentType) {
+    return true;
+  }
+
+  const normalized = contentType.toLowerCase();
+  return (
+    normalized.includes('application/json') ||
+    normalized.includes('application/xml') ||
+    normalized.includes('application/javascript') ||
+    normalized.includes('application/x-www-form-urlencoded') ||
+    normalized.includes('text/') ||
+    normalized.includes('+json') ||
+    normalized.includes('+xml')
+  );
+}
+
+function redactSensitiveText(
+  text: string,
+  contentType: string | undefined,
+  requestScoped: boolean,
+): {
+  text: string;
+  redactionRuleIds: string[];
+} {
+  let nextText = text;
+  const redactionRuleIds = new Set<string>();
+  const normalizedContentType = contentType?.toLowerCase() ?? '';
+
+  const jsonFieldPattern =
+    /"(password|passcode|token|access_token|refresh_token|authorization|cookie|set-cookie|secret|api[_-]?key|session(id)?)"\s*:\s*"([^"]*)"/gi;
+  nextText = nextText.replace(jsonFieldPattern, (_match, key: string) => {
+    redactionRuleIds.add(`rule-${key.toLowerCase()}`);
+    return `"${key}":"[REDACTED]"`;
+  });
+
+  const formFieldPattern =
+    /(^|[?&])(password|passcode|token|access_token|refresh_token|authorization|cookie|secret|api[_-]?key|session(id)?)=([^&]*)/gi;
+  nextText = nextText.replace(formFieldPattern, (_match, prefix: string, key: string) => {
+    redactionRuleIds.add(`rule-${key.toLowerCase()}`);
+    return `${prefix}${key}=[REDACTED]`;
+  });
+
+  if (
+    requestScoped &&
+    normalizedContentType.includes('application/json') &&
+    !nextText.includes('[REDACTED]') &&
+    /password/i.test(nextText)
+  ) {
+    redactionRuleIds.add('rule-password');
+    nextText = '[REDACTED JSON BODY]';
+  }
+
+  return {
+    text: nextText,
+    redactionRuleIds: [...redactionRuleIds],
+  };
 }
 
 function isRestorableCheckpoint(checkpoint: Checkpoint): checkpoint is Checkpoint & {
