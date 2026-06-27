@@ -555,7 +555,7 @@ export class BrowserSessionManager {
       const requestId = typeof params?.requestId === 'string' ? params.requestId : null;
       const requestMethod = typeof request?.method === 'string' ? request.method : 'UNKNOWN';
       const requestUrl = typeof request?.url === 'string' ? request.url : 'unknown URL';
-      const requestHeaders = normalizeHeaderRecord(request?.headers);
+      const requestHeaders = redactSensitiveHeaders(normalizeHeaderRecord(request?.headers));
       const requestContentType = requestHeaders['content-type'];
       const requestBody = captureRequestBody(request, requestContentType);
       if (requestId !== null) {
@@ -605,7 +605,7 @@ export class BrowserSessionManager {
       const requestRecord = requestId !== null ? this.requestMap.get(requestId) : undefined;
       const status = typeof response?.status === 'number' ? response.status : 'unknown';
       const responseUrl = typeof response?.url === 'string' ? response.url : 'unknown URL';
-      const responseHeaders = normalizeHeaderRecord(response?.headers);
+      const responseHeaders = redactSensitiveHeaders(normalizeHeaderRecord(response?.headers));
       const timings = normalizeNetworkTimings(response?.timing);
       const correlationIds = collectCorrelationIds(
         requestRecord?.requestHeaders ?? {},
@@ -997,6 +997,7 @@ export class BrowserSessionManager {
         decodeResponseBody(bodyResult.body, bodyResult.base64Encoded),
         requestRecord.responseContentType,
         false,
+        responseUrl,
       );
       this.requestMap.set(requestId, {
         ...requestRecord,
@@ -1022,6 +1023,14 @@ export class BrowserSessionManager {
         'runtime_manager',
         {
           requestId,
+          responseBody: {
+            state: 'unavailable',
+            contentType: requestRecord.responseContentType,
+            reason:
+              error instanceof Error
+                ? error.message
+                : String(error),
+          },
         },
         error instanceof Error ? error.message : String(error),
       );
@@ -1127,6 +1136,18 @@ export class BrowserSessionManager {
 const defaultConnector: PlaywrightConnector = {
   connect: async (endpointUrl) => chromium.connectOverCDP(endpointUrl) as unknown as ConnectedBrowser,
 };
+
+const CAPTURE_POLICY = {
+  responseBodySizeLimitBytes: 262_144,
+  sensitiveEndpointPatterns: [
+    /\/auth(?:[/?#]|$)/i,
+    /\/login(?:[/?#]|$)/i,
+    /\/oauth(?:[/?#]|$)/i,
+    /\/password(?:[/?#]|$)/i,
+    /\/session(?:[/?#]|$)/i,
+    /\/token(?:[/?#]|$)/i,
+  ],
+} as const;
 
 type CaptureBodyPayload =
   | {
@@ -1299,6 +1320,7 @@ function captureTextBody(
   text: string,
   contentType: string | undefined,
   requestScoped: boolean,
+  targetUrl?: string,
 ): CaptureBodyPayload {
   if (!isTextualContentType(contentType)) {
     return {
@@ -1308,11 +1330,20 @@ function captureTextBody(
     };
   }
 
-  if (text.length > 100_000) {
+  if (!requestScoped && isSensitiveEndpoint(targetUrl)) {
+    return {
+      state: 'excluded',
+      contentType,
+      reason:
+        'Response body capture is excluded for sensitive authentication or session endpoints by default.',
+    };
+  }
+
+  if (Buffer.byteLength(text, 'utf8') > CAPTURE_POLICY.responseBodySizeLimitBytes) {
     return {
       state: 'truncated',
       contentType,
-      reason: 'Body exceeded the current capture size limit.',
+      reason: `Body exceeded the current capture size limit of ${CAPTURE_POLICY.responseBodySizeLimitBytes} bytes.`,
     };
   }
 
@@ -1355,6 +1386,27 @@ function isTextualContentType(contentType?: string): boolean {
     normalized.includes('text/') ||
     normalized.includes('+json') ||
     normalized.includes('+xml')
+  );
+}
+
+function isSensitiveEndpoint(targetUrl?: string): boolean {
+  if (!targetUrl) {
+    return false;
+  }
+
+  return CAPTURE_POLICY.sensitiveEndpointPatterns.some((pattern) => pattern.test(targetUrl));
+}
+
+function redactSensitiveHeaders(headers: Record<string, string>): Record<string, string> {
+  return Object.entries(headers).reduce<Record<string, string>>((next, [key, value]) => {
+    next[key] = isSensitiveHeader(key) ? '[REDACTED]' : value;
+    return next;
+  }, {});
+}
+
+function isSensitiveHeader(key: string): boolean {
+  return /^(authorization|cookie|set-cookie|proxy-authorization|x-api-key|x-auth-token)$/i.test(
+    key,
   );
 }
 

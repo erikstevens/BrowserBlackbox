@@ -295,6 +295,7 @@ describe('BrowserSessionManager', () => {
         method: 'GET',
         url: 'https://example.com/api/health',
         headers: {
+          Authorization: 'Bearer top-secret',
           'X-Request-Id': 'req-123',
         },
         postData: JSON.stringify({
@@ -312,6 +313,7 @@ describe('BrowserSessionManager', () => {
         fromServiceWorker: false,
         headers: {
           'Content-Type': 'application/json',
+          'Set-Cookie': 'session=opaque',
           'X-Request-Id': 'req-123',
         },
         timing: {
@@ -343,6 +345,7 @@ describe('BrowserSessionManager', () => {
           redactionRuleIds: ['rule-password'],
         },
         headers: {
+          authorization: '[REDACTED]',
           'x-request-id': 'req-123',
         },
       });
@@ -354,6 +357,7 @@ describe('BrowserSessionManager', () => {
         fromServiceWorker: false,
         headers: {
           'content-type': 'application/json',
+          'set-cookie': '[REDACTED]',
           'x-request-id': 'req-123',
         },
         protocol: 'h2',
@@ -374,6 +378,90 @@ describe('BrowserSessionManager', () => {
           redactionRuleIds: ['rule-token'],
         },
       });
+  });
+
+  it('excludes sensitive response bodies and truncates oversized payloads by policy', async () => {
+    const connectorStub = createConnectorStub();
+    const manager = new BrowserSessionManager(connectorStub.connector);
+    const observedEvents: Array<{ code: string; data?: Record<string, unknown> }> = [];
+    manager.registerSurface(createSurfaceStub());
+    manager.subscribe((event) => {
+      observedEvents.push({
+        code: event.code,
+        data: event.data,
+      });
+    });
+
+    await manager.launch({ targetUrl: 'https://example.com/' });
+
+    connectorStub.state.setResponseBody(
+      'request-sensitive',
+      JSON.stringify({ token: 'opaque', session: 'super-secret' }),
+    );
+    connectorStub.state.emitCdpEvent('Network.requestWillBeSent', {
+      requestId: 'request-sensitive',
+      request: {
+        method: 'POST',
+        url: 'https://example.com/api/login',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      },
+    });
+    connectorStub.state.emitCdpEvent('Network.responseReceived', {
+      requestId: 'request-sensitive',
+      response: {
+        status: 200,
+        url: 'https://example.com/api/login',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      },
+    });
+
+    connectorStub.state.setResponseBody(
+      'request-large',
+      'x'.repeat(262_145),
+    );
+    connectorStub.state.emitCdpEvent('Network.requestWillBeSent', {
+      requestId: 'request-large',
+      request: {
+        method: 'GET',
+        url: 'https://example.com/api/report',
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    });
+    connectorStub.state.emitCdpEvent('Network.responseReceived', {
+      requestId: 'request-large',
+      response: {
+        status: 200,
+        url: 'https://example.com/api/report',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(
+      observedEvents.find((event) => event.code === 'network.response.body.captured' && event.data?.requestId === 'request-sensitive')?.data,
+    ).toMatchObject({
+      requestId: 'request-sensitive',
+      responseBody: {
+        state: 'excluded',
+      },
+    });
+    expect(
+      observedEvents.find((event) => event.code === 'network.response.body.captured' && event.data?.requestId === 'request-large')?.data,
+    ).toMatchObject({
+      requestId: 'request-large',
+      responseBody: {
+        state: 'truncated',
+      },
+    });
   });
 
   it('executes supported replay steps against the attached page', async () => {
