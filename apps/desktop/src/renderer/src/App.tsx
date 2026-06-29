@@ -524,9 +524,23 @@ export function App() {
                         </span>
                       </p>
                       <p className="status-row">
+                        <span className="status-label">Protocol</span>
+                        <span className="status-value">{selectedCapture.protocol}</span>
+                      </p>
+                      <p className="status-row">
                         <span className="status-label">Duration</span>
                         <span className="status-value">
                           {formatDuration(selectedCapture.durationMs)}
+                        </span>
+                      </p>
+                      <p className="status-row">
+                        <span className="status-label">Retry count</span>
+                        <span className="status-value">{selectedCapture.retryCount}</span>
+                      </p>
+                      <p className="status-row">
+                        <span className="status-label">Blocked</span>
+                        <span className="status-value">
+                          {selectedCapture.blocked ? 'yes' : 'no'}
                         </span>
                       </p>
                       <p className="status-row">

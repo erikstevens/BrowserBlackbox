@@ -1073,6 +1073,10 @@ function buildEvidenceFromRuntimeEvents(
       const requestId = typeof event.data?.requestId === 'string' ? event.data.requestId : null;
       const url = typeof event.data?.url === 'string' ? event.data.url : null;
       const method = typeof event.data?.method === 'string' ? event.data.method : null;
+      const protocol =
+        event.data?.protocol === 'websocket' ? 'websocket' : 'http';
+      const retryCount =
+        typeof event.data?.retryCount === 'number' ? event.data.retryCount : 0;
 
       if (!requestId || !url || !method) {
         continue;
@@ -1085,7 +1089,7 @@ function buildEvidenceFromRuntimeEvents(
           id: requestId,
           timestamp: event.timestamp,
           triggeringStepId: latestCapturedStepId,
-          protocol: 'http',
+          protocol,
           request: {
             url,
             method,
@@ -1099,8 +1103,8 @@ function buildEvidenceFromRuntimeEvents(
             fromCache: false,
             fromServiceWorker: false,
           },
-          retryCount: 0,
-          blocked: false,
+          retryCount,
+          blocked: event.data?.blocked === true,
         }),
       );
       const timelineEvent = parseTimelineEvent({
@@ -1141,7 +1145,8 @@ function buildEvidenceFromRuntimeEvents(
             schemaVersion: domainVersions.domainSchemaVersion,
             id: requestId,
             timestamp: event.timestamp,
-            protocol: 'http',
+            protocol:
+              event.data?.protocol === 'websocket' ? 'websocket' : 'http',
             request: {
               url,
               method,
@@ -1156,6 +1161,10 @@ function buildEvidenceFromRuntimeEvents(
             retryCount: 0,
             blocked: false,
           }),
+          protocol:
+            event.data?.protocol === 'websocket'
+              ? 'websocket'
+              : existing?.protocol ?? 'http',
           durationMs:
             typeof event.data?.durationMs === 'number' ? event.data.durationMs : existing?.durationMs,
           correlationIds:
@@ -1164,6 +1173,11 @@ function buildEvidenceFromRuntimeEvents(
             fromCache: event.data?.fromCache === true,
             fromServiceWorker: event.data?.fromServiceWorker === true,
           },
+          retryCount:
+            typeof event.data?.retryCount === 'number'
+              ? event.data.retryCount
+              : existing?.retryCount ?? 0,
+          blocked: event.data?.blocked === true || existing?.blocked === true,
           response: {
             status,
             headers: normalizeStringRecord(event.data?.headers),
@@ -1200,7 +1214,8 @@ function buildEvidenceFromRuntimeEvents(
             schemaVersion: domainVersions.domainSchemaVersion,
             id: requestId,
             timestamp: event.timestamp,
-            protocol: 'http',
+            protocol:
+              event.data?.protocol === 'websocket' ? 'websocket' : 'http',
             request: {
               url,
               method,
@@ -1217,10 +1232,19 @@ function buildEvidenceFromRuntimeEvents(
             retryCount: 0,
             blocked: false,
           }),
+          protocol:
+            event.data?.protocol === 'websocket'
+              ? 'websocket'
+              : existing?.protocol ?? 'http',
+          blocked: event.data?.blocked === true,
           failure: {
             code: event.code,
             message: event.detail ?? event.message,
           },
+          retryCount:
+            typeof event.data?.retryCount === 'number'
+              ? event.data.retryCount
+              : existing?.retryCount ?? 0,
           request: {
             ...(existing?.request ?? {
               url,

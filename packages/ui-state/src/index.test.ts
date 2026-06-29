@@ -417,6 +417,108 @@ describe('workspace recording review state', () => {
     );
   });
 
+  it('derives websocket protocol, retry count, and blocked state from runtime events', () => {
+    const state = useWorkspaceStore.getState();
+    state.beginRuntimeCapture('https://example.test/app', 'session-live-001');
+
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/app',
+        pageUrl: 'https://example.test/app',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'healthy',
+        lastEventAt: '2026-06-25T12:13:00.000Z',
+        lastError: null,
+        recentEventCount: 1,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'network-start-ws-001',
+        timestamp: '2026-06-25T12:13:00.000Z',
+        category: 'network',
+        code: 'network.request.started',
+        level: 'info',
+        message: 'WebSocket wss://example.test/socket',
+        source: 'cdp',
+        data: {
+          body: {
+            state: 'unavailable',
+            reason: 'WebSocket frames are not represented as a single request body.',
+          },
+          headers: {
+            'x-request-id': 'ws-123',
+          },
+          method: 'GET',
+          protocol: 'websocket',
+          requestId: 'ws-001',
+          retryCount: 2,
+          url: 'wss://example.test/socket',
+        },
+      },
+    });
+
+    state.pushRuntimeUpdate({
+      state: {
+        phase: 'running',
+        targetUrl: 'https://example.test/app',
+        pageUrl: 'https://example.test/app',
+        sessionId: 'session-live-001',
+        playwrightAttached: true,
+        cdpAttached: true,
+        lastError: null,
+      },
+      health: {
+        status: 'degraded',
+        lastEventAt: '2026-06-25T12:13:01.000Z',
+        lastError: 'inspector: Blocked by client',
+        recentEventCount: 2,
+        subscriberCount: 1,
+      },
+      event: {
+        id: 'network-fail-ws-001',
+        timestamp: '2026-06-25T12:13:01.000Z',
+        category: 'network',
+        code: 'network.request.failed',
+        level: 'error',
+        message: 'WebSocket failed for wss://example.test/socket.',
+        source: 'cdp',
+        detail: 'inspector: Blocked by client',
+        data: {
+          blocked: true,
+          blockedReason: 'inspector',
+          errorText: 'Blocked by client',
+          headers: {
+            'x-request-id': 'ws-123',
+          },
+          method: 'GET',
+          protocol: 'websocket',
+          requestId: 'ws-001',
+          retryCount: 2,
+          url: 'wss://example.test/socket',
+        },
+      },
+    });
+
+    expect(useWorkspaceStore.getState().captures[0]).toMatchObject({
+      id: 'ws-001',
+      protocol: 'websocket',
+      retryCount: 2,
+      blocked: true,
+      request: {
+        url: 'wss://example.test/socket',
+      },
+      failure: {
+        code: 'network.request.failed',
+      },
+    });
+  });
+
   it('persists enriched response metadata into the evidence ledger', () => {
     const state = useWorkspaceStore.getState();
     state.beginRuntimeCapture('https://example.test/login', 'session-live-001');

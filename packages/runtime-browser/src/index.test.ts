@@ -360,7 +360,7 @@ describe('BrowserSessionManager', () => {
           'set-cookie': '[REDACTED]',
           'x-request-id': 'req-123',
         },
-        protocol: 'h2',
+        protocol: 'http',
         status: 200,
         timings: {
           dnsMs: 5,
@@ -567,6 +567,122 @@ describe('BrowserSessionManager', () => {
           text: '{"profile":{"email":"[REDACTED]"}}',
           redactionRuleIds: ['rule-user-email'],
         },
+      });
+  });
+
+  it('tracks retry and blocked metadata for repeated failed requests', async () => {
+    const connectorStub = createConnectorStub();
+    const manager = new BrowserSessionManager(connectorStub.connector);
+    const observedEvents: Array<{ code: string; data?: Record<string, unknown>; detail?: string }> = [];
+    manager.registerSurface(createSurfaceStub());
+    manager.subscribe((event) => {
+      observedEvents.push({
+        code: event.code,
+        data: event.data,
+        detail: event.detail,
+      });
+    });
+
+    await manager.launch({ targetUrl: 'https://example.com/' });
+
+    connectorStub.state.emitCdpEvent('Network.requestWillBeSent', {
+      requestId: 'request-retry-1',
+      request: {
+        method: 'GET',
+        url: 'https://example.com/api/retry',
+        headers: {},
+      },
+    });
+    connectorStub.state.emitCdpEvent('Network.loadingFailed', {
+      requestId: 'request-retry-1',
+      errorText: 'Blocked by client',
+      blockedReason: 'inspector',
+    });
+
+    connectorStub.state.emitCdpEvent('Network.requestWillBeSent', {
+      requestId: 'request-retry-2',
+      request: {
+        method: 'GET',
+        url: 'https://example.com/api/retry',
+        headers: {},
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(
+      observedEvents.find((event) => event.code === 'network.request.failed')?.data,
+    ).toMatchObject({
+      blocked: true,
+      blockedReason: 'inspector',
+      protocol: 'http',
+      retryCount: 0,
+    });
+    expect(
+      observedEvents
+        .filter((event) => event.code === 'network.request.started')
+        .at(-1)?.data,
+    ).toMatchObject({
+      protocol: 'http',
+      retryCount: 1,
+      url: 'https://example.com/api/retry',
+    });
+  });
+
+  it('captures websocket handshake traffic as websocket protocol evidence', async () => {
+    const connectorStub = createConnectorStub();
+    const manager = new BrowserSessionManager(connectorStub.connector);
+    const observedEvents: Array<{ code: string; data?: Record<string, unknown> }> = [];
+    manager.registerSurface(createSurfaceStub());
+    manager.subscribe((event) => {
+      observedEvents.push({
+        code: event.code,
+        data: event.data,
+      });
+    });
+
+    await manager.launch({ targetUrl: 'https://example.com/' });
+
+    connectorStub.state.emitCdpEvent('Network.webSocketCreated', {
+      requestId: 'ws-1',
+      url: 'wss://example.com/socket?sessionId=abc123',
+    });
+    connectorStub.state.emitCdpEvent('Network.webSocketWillSendHandshakeRequest', {
+      requestId: 'ws-1',
+      request: {
+        headers: {
+          'X-Request-Id': 'ws-123',
+          Cookie: 'session=opaque',
+        },
+      },
+    });
+    connectorStub.state.emitCdpEvent('Network.webSocketHandshakeResponseReceived', {
+      requestId: 'ws-1',
+      response: {
+        status: 101,
+        headers: {
+          'X-Request-Id': 'ws-123',
+          'Set-Cookie': 'session=opaque',
+        },
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observedEvents.find((event) => event.code === 'network.request.started')?.data)
+      .toMatchObject({
+        protocol: 'websocket',
+        method: 'GET',
+        retryCount: 0,
+        url: 'wss://example.com/socket?sessionId=abc123',
+      });
+    expect(observedEvents.find((event) => event.code === 'network.response.received')?.data)
+      .toMatchObject({
+        correlationIds: ['x-request-id:ws-123'],
+        protocol: 'websocket',
+        retryCount: 0,
+        status: 101,
+        url: 'wss://example.com/socket?sessionId=abc123',
       });
   });
 

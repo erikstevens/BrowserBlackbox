@@ -102,12 +102,15 @@ export class BrowserSessionManager {
   private requestMap = new Map<
     string,
     {
+      protocol: 'http' | 'websocket';
       requestBody?: CaptureBodyPayload;
       requestContentType?: string;
       method: string;
       startedAtMs: number;
       requestHeaders: Record<string, string>;
       url: string;
+      retryCount: number;
+      blocked: boolean;
       fromCache?: boolean;
       responseBody?: CaptureBodyPayload;
       responseContentType?: string;
@@ -126,6 +129,7 @@ export class BrowserSessionManager {
       durationMs?: number;
     }
   >();
+  private failedAttemptCounts = new Map<string, number>();
   private surface: ManagedBrowserSurface | null = null;
   private state: BrowserRuntimeState = DEFAULT_STATE;
   private activeRedactionRules: RedactionRule[] = [];
@@ -191,6 +195,7 @@ export class BrowserSessionManager {
       lastError: null,
     };
     this.requestMap.clear();
+    this.failedAttemptCounts.clear();
     this.emitEvent(
       'lifecycle',
       'runtime.launch.started',
@@ -303,6 +308,7 @@ export class BrowserSessionManager {
     await this.disposeConnection();
     this.state = { ...DEFAULT_STATE };
     this.requestMap.clear();
+    this.failedAttemptCounts.clear();
     this.emitEvent(
       'lifecycle',
       'runtime.stop.completed',
@@ -575,14 +581,20 @@ export class BrowserSessionManager {
         this.activeRedactionRules,
       );
       const redactedRequestUrl = redactUrlByRules(requestUrl, this.activeRedactionRules);
+      const retryCount = this.failedAttemptCounts.get(
+        buildAttemptKey(requestMethod, redactedRequestUrl, 'http'),
+      ) ?? 0;
       if (requestId !== null) {
         this.requestMap.set(requestId, {
+          protocol: 'http',
           startedAtMs: Date.now(),
           method: requestMethod,
           requestBody,
           requestContentType,
           requestHeaders,
           url: redactedRequestUrl,
+          retryCount,
+          blocked: false,
         });
       }
       this.emitEvent(
@@ -595,7 +607,9 @@ export class BrowserSessionManager {
           headers: requestHeaders,
           body: requestBody,
           method: requestMethod,
+          protocol: 'http',
           requestId,
+          retryCount,
           url: redactedRequestUrl,
         },
       );
@@ -653,6 +667,11 @@ export class BrowserSessionManager {
           url: redactUrlByRules(responseUrl, this.activeRedactionRules),
         });
       }
+      if (requestRecord) {
+        this.failedAttemptCounts.delete(
+          buildAttemptKey(requestRecord.method, requestRecord.url, requestRecord.protocol),
+        );
+      }
       const redactedResponseUrl = redactUrlByRules(responseUrl, this.activeRedactionRules);
       this.emitEvent(
         'network',
@@ -671,11 +690,13 @@ export class BrowserSessionManager {
           headers: responseHeaders,
           method: requestRecord?.method ?? null,
           protocol:
-            typeof response?.protocol === 'string' ? response.protocol : null,
+            requestRecord?.protocol ?? (typeof response?.protocol === 'string' ? response.protocol : null),
           requestId,
+          retryCount: requestRecord?.retryCount ?? 0,
           status,
           timings,
           url: redactedResponseUrl,
+          blocked: requestRecord?.blocked ?? false,
         },
       );
       if (requestId !== null) {
@@ -689,6 +710,20 @@ export class BrowserSessionManager {
       const requestRecord = requestId !== null ? this.requestMap.get(requestId) : undefined;
       const failedUrl = requestRecord?.url ?? 'request';
       const errorText = typeof params?.errorText === 'string' ? params.errorText : 'unknown failure';
+      const blockedReason =
+        typeof params?.blockedReason === 'string' ? params.blockedReason : null;
+      if (requestRecord) {
+        const attemptKey = buildAttemptKey(
+          requestRecord.method,
+          requestRecord.url,
+          requestRecord.protocol,
+        );
+        this.failedAttemptCounts.set(attemptKey, requestRecord.retryCount + 1);
+        this.requestMap.set(requestId!, {
+          ...requestRecord,
+          blocked: blockedReason !== null,
+        });
+      }
       this.emitEvent(
         'network',
         'network.request.failed',
@@ -696,14 +731,214 @@ export class BrowserSessionManager {
         `Network loading failed for ${failedUrl}.`,
         'cdp',
         {
+          blocked: blockedReason !== null,
+          blockedReason,
           errorText,
           headers: requestRecord?.requestHeaders ?? {},
           method: requestRecord?.method ?? null,
+          protocol: requestRecord?.protocol ?? 'http',
           requestId,
+          retryCount: requestRecord?.retryCount ?? 0,
           url: failedUrl,
         },
-        errorText,
+        blockedReason ? `${blockedReason}: ${errorText}` : errorText,
       );
+      return;
+    }
+
+    if (method === 'Network.webSocketCreated') {
+      const requestId = typeof params?.requestId === 'string' ? params.requestId : null;
+      const url = typeof params?.url === 'string' ? params.url : 'unknown URL';
+      const redactedUrl = redactUrlByRules(url, this.activeRedactionRules);
+      const retryCount =
+        this.failedAttemptCounts.get(buildAttemptKey('GET', redactedUrl, 'websocket')) ?? 0;
+
+      if (requestId !== null) {
+        this.requestMap.set(requestId, {
+          protocol: 'websocket',
+          startedAtMs: Date.now(),
+          method: 'GET',
+          requestBody: unavailableBody('WebSocket frames are not represented as a single request body.'),
+          requestHeaders: {},
+          url: redactedUrl,
+          retryCount,
+          blocked: false,
+        });
+      }
+
+      this.emitEvent(
+        'network',
+        'network.request.started',
+        'info',
+        `WebSocket ${redactedUrl}`,
+        'cdp',
+        {
+          body: unavailableBody('WebSocket frames are not represented as a single request body.'),
+          headers: {},
+          method: 'GET',
+          protocol: 'websocket',
+          requestId,
+          retryCount,
+          url: redactedUrl,
+        },
+      );
+      return;
+    }
+
+    if (method === 'Network.webSocketWillSendHandshakeRequest') {
+      const requestId = typeof params?.requestId === 'string' ? params.requestId : null;
+      const request = asRecord(params?.request);
+      if (!requestId) {
+        return;
+      }
+
+      const existing = this.requestMap.get(requestId);
+      if (!existing) {
+        return;
+      }
+
+      const requestHeaders = redactSensitiveHeaders(
+        normalizeHeaderRecord(request?.headers),
+        this.activeRedactionRules,
+        'request',
+      );
+      this.requestMap.set(requestId, {
+        ...existing,
+        requestHeaders,
+      });
+      return;
+    }
+
+    if (method === 'Network.webSocketHandshakeResponseReceived') {
+      const requestId = typeof params?.requestId === 'string' ? params.requestId : null;
+      const response = asRecord(params?.response);
+      if (!requestId) {
+        return;
+      }
+
+      const existing = this.requestMap.get(requestId);
+      if (!existing) {
+        return;
+      }
+
+      const responseHeaders = redactSensitiveHeaders(
+        normalizeHeaderRecord(response?.headers),
+        this.activeRedactionRules,
+        'response',
+      );
+      const correlationIds = collectCorrelationIds(existing.requestHeaders, responseHeaders);
+      const status = typeof response?.status === 'number' ? response.status : 101;
+      this.requestMap.set(requestId, {
+        ...existing,
+        correlationIds,
+        responseHeaders,
+        responseStatus: status,
+        responseProtocol: 'websocket',
+        responseBody: unavailableBody(
+          'WebSocket frames are not represented as a single response body.',
+        ),
+      });
+      this.failedAttemptCounts.delete(buildAttemptKey(existing.method, existing.url, existing.protocol));
+      this.emitEvent(
+        'network',
+        'network.response.received',
+        'info',
+        `WebSocket handshake ${status} from ${existing.url}`,
+        'cdp',
+        {
+          blocked: existing.blocked,
+          correlationIds,
+          durationMs: Math.max(0, Date.now() - existing.startedAtMs),
+          fromCache: false,
+          fromServiceWorker: false,
+          headers: responseHeaders,
+          method: existing.method,
+          protocol: 'websocket',
+          requestId,
+          retryCount: existing.retryCount,
+          status,
+          timings: null,
+          url: existing.url,
+          responseBody: unavailableBody(
+            'WebSocket frames are not represented as a single response body.',
+          ),
+        },
+      );
+      return;
+    }
+
+    if (method === 'Network.webSocketFrameSent' || method === 'Network.webSocketFrameReceived') {
+      const requestId = typeof params?.requestId === 'string' ? params.requestId : null;
+      const response = asRecord(params?.response);
+      const payloadData =
+        typeof response?.payloadData === 'string' ? response.payloadData : null;
+      this.emitEvent(
+        'network',
+        method === 'Network.webSocketFrameSent'
+          ? 'network.websocket.frame.sent'
+          : 'network.websocket.frame.received',
+        'info',
+        method === 'Network.webSocketFrameSent'
+          ? 'Captured WebSocket frame sent event.'
+          : 'Captured WebSocket frame received event.',
+        'cdp',
+        {
+          opcode: typeof response?.opcode === 'number' ? response.opcode : null,
+          payloadPreview: payloadData ? payloadData.slice(0, 120) : null,
+          requestId,
+        },
+      );
+      return;
+    }
+
+    if (method === 'Network.webSocketFrameError') {
+      const requestId = typeof params?.requestId === 'string' ? params.requestId : null;
+      const errorMessage =
+        typeof params?.errorMessage === 'string' ? params.errorMessage : 'WebSocket frame error';
+      const existing = requestId ? this.requestMap.get(requestId) : undefined;
+      if (existing) {
+        this.failedAttemptCounts.set(
+          buildAttemptKey(existing.method, existing.url, existing.protocol),
+          existing.retryCount + 1,
+        );
+      }
+      this.emitEvent(
+        'network',
+        'network.request.failed',
+        'error',
+        `WebSocket failed for ${existing?.url ?? 'request'}.`,
+        'cdp',
+        {
+          blocked: false,
+          errorText: errorMessage,
+          headers: existing?.requestHeaders ?? {},
+          method: existing?.method ?? 'GET',
+          protocol: 'websocket',
+          requestId,
+          retryCount: existing?.retryCount ?? 0,
+          url: existing?.url ?? 'unknown URL',
+        },
+        errorMessage,
+      );
+      return;
+    }
+
+    if (method === 'Network.webSocketClosed') {
+      const requestId = typeof params?.requestId === 'string' ? params.requestId : null;
+      if (!requestId) {
+        return;
+      }
+
+      const existing = this.requestMap.get(requestId);
+      if (!existing) {
+        return;
+      }
+
+      const durationMs = Math.max(0, Date.now() - existing.startedAtMs);
+      this.requestMap.set(requestId, {
+        ...existing,
+        durationMs,
+      });
       return;
     }
 
@@ -1190,6 +1425,22 @@ type CaptureBodyPayload =
       contentType?: string;
       reason: string;
     };
+
+function unavailableBody(reason: string, contentType?: string): CaptureBodyPayload {
+  return {
+    state: 'unavailable',
+    contentType,
+    reason,
+  };
+}
+
+function buildAttemptKey(
+  method: string,
+  url: string,
+  protocol: 'http' | 'websocket',
+): string {
+  return `${protocol}:${method.toUpperCase()}:${url}`;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value === 'object' && value !== null) {

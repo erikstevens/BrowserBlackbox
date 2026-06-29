@@ -458,9 +458,43 @@ test.describe('desktop acceptance', () => {
 
     await expect(exportResult).toContainText('unsafe-unredacted');
   });
+
+  test('shows retry metadata when a repeated request succeeds after a prior failure', async () => {
+    await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
+    await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
+    await expect(statusRowPill(window, 'Phase')).toContainText('running');
+
+    await electronApp.evaluate(async ({ BrowserWindow }) => {
+      const browserWindow = BrowserWindow.getAllWindows()[0];
+      const view = browserWindow?.getBrowserView();
+      await view?.webContents.executeJavaScript(`
+        (async () => {
+          try {
+            await fetch('/api/retry');
+          } catch {}
+          await fetch('/api/retry');
+        })();
+      `);
+    });
+
+    await expect(window.locator('.event-stream')).toContainText(
+      `GET ${fixtureServer.origin}/api/retry`,
+    );
+
+    const networkPanel = window.getByTestId('network-capture-panel');
+    await expect(networkPanel).toContainText(`${fixtureServer.origin}/api/retry`);
+    await networkPanel.getByRole('button', { name: /\/api\/retry/ }).last().click();
+
+    await expect(window.getByTestId('request-detail-view')).toContainText(
+      `${fixtureServer.origin}/api/retry`,
+    );
+    await expect(window.getByTestId('request-detail-view')).toContainText('Retry count');
+    await expect(window.getByTestId('request-detail-view')).toContainText('1');
+  });
 });
 
 async function createFixtureServer(): Promise<FixtureServer> {
+  let retryAttemptCount = 0;
   const server = createServer((request, response) => {
     if (request.url === '/api/health') {
       response.writeHead(200, { 'Content-Type': 'application/json' });
@@ -497,6 +531,18 @@ async function createFixtureServer(): Promise<FixtureServer> {
           },
         }),
       );
+      return;
+    }
+
+    if (request.url === '/api/retry') {
+      retryAttemptCount += 1;
+      if (retryAttemptCount === 1) {
+        request.socket.destroy();
+        return;
+      }
+
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ ok: true, attempt: retryAttemptCount }));
       return;
     }
 
