@@ -1,4 +1,5 @@
 import type { StoredRunSnapshot } from '@browser-blackbox/persistence/src/contracts';
+import type { RedactionRule } from '@browser-blackbox/domain';
 import type {
   BrowserRuntimeDiagnostics,
   BrowserLaunchRequest,
@@ -19,6 +20,7 @@ export type DesktopShellApi = {
   ) => Promise<BrowserRuntimeCommandResult>;
   runReplay: (request: BrowserReplayRequest) => Promise<BrowserReplayCommandResult>;
   setInspectionMode: (enabled: boolean) => Promise<boolean>;
+  setRedactionRules: (rules: RedactionRule[]) => Promise<void>;
   stopBrowserSession: () => Promise<BrowserRuntimeCommandResult>;
   loadWorkingCopySnapshot: () => Promise<StoredRunSnapshot | null>;
   saveWorkingCopySnapshot: (snapshot: StoredRunSnapshot) => Promise<void>;

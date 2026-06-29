@@ -2,7 +2,7 @@ import { app, BrowserView, BrowserWindow, ipcMain } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
-import { domainVersions, parseInspectionMetadata } from '@browser-blackbox/domain';
+import { domainVersions, parseInspectionMetadata, parseRedactionRule } from '@browser-blackbox/domain';
 import { FileBackedSqliteStore } from '@browser-blackbox/persistence/src/file-store';
 import type { StoredRunSnapshot } from '@browser-blackbox/persistence/src/contracts';
 import { createSqliteEngine } from '@browser-blackbox/persistence/src/sqlite';
@@ -151,6 +151,13 @@ function registerIpcHandlers(): void {
         },
       });
       return inspectionModeEnabled;
+    },
+  );
+
+  ipcMain.handle(
+    'browser-runtime:set-redaction-rules',
+    async (_event, rules: unknown[]): Promise<void> => {
+      browserSessionManager.setRedactionRules(rules.map((rule) => parseRedactionRule(rule)));
     },
   );
 

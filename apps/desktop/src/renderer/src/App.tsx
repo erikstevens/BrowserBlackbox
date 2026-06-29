@@ -3,9 +3,11 @@ import {
   productSummary,
   type CaptureBody,
   type RecordedStep,
+  type RedactionRule,
   type RequestResponseCapture,
 } from '@browser-blackbox/domain';
 import {
+  createUserDefinedRedactionRule,
   getRecordingUndoAvailability,
   getSelectedRecordedStep,
   useWorkspaceStore,
@@ -18,6 +20,7 @@ export function App() {
   const runtimeEvents = useWorkspaceStore((state) => state.runtimeEvents);
   const currentInspection = useWorkspaceStore((state) => state.currentInspection);
   const captures = useWorkspaceStore((state) => state.captures);
+  const redactionRules = useWorkspaceStore((state) => state.redactionRules);
   const timeline = useWorkspaceStore((state) => state.timeline);
   const diagnosis = useWorkspaceStore((state) => state.diagnosis);
   const recordingSession = useWorkspaceStore((state) => state.recordingSession);
@@ -41,6 +44,8 @@ export function App() {
   const undoRecordingEdit = useWorkspaceStore((state) => state.undoRecordingEdit);
   const redoRecordingEdit = useWorkspaceStore((state) => state.redoRecordingEdit);
   const beginRuntimeCapture = useWorkspaceStore((state) => state.beginRuntimeCapture);
+  const addRedactionRule = useWorkspaceStore((state) => state.addRedactionRule);
+  const removeRedactionRule = useWorkspaceStore((state) => state.removeRedactionRule);
   const hydrateWorkingCopySnapshot = useWorkspaceStore(
     (state) => state.hydrateWorkingCopySnapshot,
   );
@@ -64,6 +69,9 @@ export function App() {
   const [inspectionModeEnabled, setInspectionModeEnabled] = useState(false);
   const [persistenceReady, setPersistenceReady] = useState(false);
   const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
+  const [newRuleKind, setNewRuleKind] = useState<RedactionRule['kind']>('json-path');
+  const [newRuleScope, setNewRuleScope] = useState<RedactionRule['scope']>('both');
+  const [newRuleTarget, setNewRuleTarget] = useState('');
   const selectedRecordedStep = getSelectedRecordedStep(recordingSession);
   const relatedCaptures =
     currentInspection === null
@@ -147,6 +155,10 @@ export function App() {
   }, [browserRuntime.sessionId, exportWorkingCopySnapshot, persistenceReady, recordingSession, url]);
 
   useEffect(() => {
+    void window.desktopShell.setRedactionRules(redactionRules);
+  }, [redactionRules]);
+
+  useEffect(() => {
     if (captures.length === 0) {
       if (selectedCaptureId !== null) {
         setSelectedCaptureId(null);
@@ -164,7 +176,10 @@ export function App() {
     beginRuntimeCapture(url, null);
 
     try {
-      const result = await window.desktopShell.launchBrowserSession({ targetUrl: url });
+      const result = await window.desktopShell.launchBrowserSession({
+        targetUrl: url,
+        redactionRules,
+      });
       setBrowserRuntime(result.state);
     } catch (error) {
       setBrowserRuntime({
@@ -212,6 +227,7 @@ export function App() {
         steps: useWorkspaceStore.getState().recordingSession.present.steps,
         checkpoints: useWorkspaceStore.getState().recordingSession.present.checkpoints,
         plan: replayPlan,
+        redactionRules: useWorkspaceStore.getState().redactionRules,
       });
       setBrowserRuntime(result.state);
       completeReplayExecution(result.completedStepIds, result.capturedCheckpoints);
@@ -231,6 +247,23 @@ export function App() {
   async function toggleInspectionMode(): Promise<void> {
     const nextEnabled = await window.desktopShell.setInspectionMode(!inspectionModeEnabled);
     setInspectionModeEnabled(nextEnabled);
+  }
+
+  function createRedactionRule(): void {
+    const target = newRuleTarget.trim();
+    if (target.length === 0) {
+      return;
+    }
+
+    addRedactionRule(
+      createUserDefinedRedactionRule({
+        id: `rule-user-${Date.now()}`,
+        kind: newRuleKind,
+        scope: newRuleScope,
+        target,
+      }),
+    );
+    setNewRuleTarget('');
   }
 
   return (
@@ -502,12 +535,115 @@ export function App() {
                       <p className="inspection-reason">
                         Guaranteed secret redaction is always active for credential-like
                         transport fields. Additional user-defined masking rules are a
-                        later Phase 7 slice and are not configured in this view yet.
+                        separate layer and are configured below.
                       </p>
                       <p className="inspection-reason">
                         Full visible bodies may still contain personal or regulated data
                         unless explicit redaction rules are added before sharing or export.
                       </p>
+                    </div>
+
+                    <div className="network-detail-card" data-testid="redaction-rules-panel">
+                      <div className="panel-header">
+                        <div>
+                          <p className="section-label">Redaction rules</p>
+                          <p className="panel-copy">
+                            Guaranteed rules always protect credential-like transport data.
+                            Add user-defined rules for known business fields, headers,
+                            cookies, query params, or regex patterns captured in this workspace.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="rule-editor-grid">
+                        <label className="field-label" htmlFor="redaction-kind">
+                          Rule kind
+                        </label>
+                        <select
+                          id="redaction-kind"
+                          className="url-input"
+                          value={newRuleKind}
+                          onChange={(event) =>
+                            setNewRuleKind(event.target.value as RedactionRule['kind'])
+                          }
+                        >
+                          <option value="json-path">JSON path</option>
+                          <option value="form-field">Form field</option>
+                          <option value="query-param">Query param</option>
+                          <option value="header">Header</option>
+                          <option value="cookie">Cookie</option>
+                          <option value="regex">Regex pattern</option>
+                        </select>
+
+                        <label className="field-label" htmlFor="redaction-scope">
+                          Scope
+                        </label>
+                        <select
+                          id="redaction-scope"
+                          className="url-input"
+                          value={newRuleScope}
+                          onChange={(event) =>
+                            setNewRuleScope(event.target.value as RedactionRule['scope'])
+                          }
+                        >
+                          <option value="both">Request and response</option>
+                          <option value="request">Request only</option>
+                          <option value="response">Response only</option>
+                        </select>
+
+                        <label className="field-label" htmlFor="redaction-target">
+                          Target
+                        </label>
+                        <input
+                          id="redaction-target"
+                          className="url-input"
+                          value={newRuleTarget}
+                          onChange={(event) => setNewRuleTarget(event.target.value)}
+                          placeholder={describeRuleTargetPlaceholder(newRuleKind)}
+                        />
+
+                        <div className="button-row">
+                          <button
+                            className="button button-primary"
+                            disabled={newRuleTarget.trim().length === 0}
+                            onClick={() => createRedactionRule()}
+                            type="button"
+                          >
+                            Add redaction rule
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="checkpoint-list">
+                        {redactionRules.length === 0 ? (
+                          <p className="empty-state">
+                            No user-defined rules yet. Mandatory credential redaction still
+                            applies even with an empty list.
+                          </p>
+                        ) : (
+                          redactionRules.map((rule) => (
+                            <div className="step-review-card" key={rule.id}>
+                              <div className="step-review-header">
+                                <span className="step-index">{rule.kind}</span>
+                                <span className="status-value">{rule.scope}</span>
+                              </div>
+                              <p className="step-summary">{rule.target}</p>
+                              <div className="step-review-tags">
+                                <span className="review-tag">{rule.mode}</span>
+                                <span className="review-tag">{rule.id}</span>
+                              </div>
+                              <div className="button-row">
+                                <button
+                                  className="button button-secondary"
+                                  onClick={() => removeRedactionRule(rule.id)}
+                                  type="button"
+                                >
+                                  Remove rule
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     </div>
 
                     <div className="network-detail-card" data-testid="request-timing-panel">
@@ -1209,6 +1345,25 @@ function formatRequestLabel(url: string): string {
     return `${parsedUrl.pathname || '/'}${parsedUrl.search}`;
   } catch {
     return url;
+  }
+}
+
+function describeRuleTargetPlaceholder(kind: RedactionRule['kind']): string {
+  switch (kind) {
+    case 'json-path':
+      return '$.token';
+    case 'form-field':
+      return 'accountNumber';
+    case 'query-param':
+      return 'sessionId';
+    case 'header':
+      return 'X-Customer-Token';
+    case 'cookie':
+      return 'session';
+    case 'regex':
+      return 'acct-[0-9]{4,}';
+    default:
+      return 'Redaction target';
   }
 }
 

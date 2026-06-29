@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { BrowserRuntimeUpdate } from '@browser-blackbox/runtime-browser';
 import {
+  createUserDefinedRedactionRule,
   createInitialWorkspaceState,
   getSelectedRecordedStep,
   getRecordingUndoAvailability,
@@ -184,6 +185,14 @@ describe('workspace recording review state', () => {
   it('exports and rehydrates the working copy snapshot', () => {
     const state = useWorkspaceStore.getState();
     state.beginRuntimeCapture('https://example.test/login', 'session-live-001');
+    state.addRedactionRule(
+      createUserDefinedRedactionRule({
+        id: 'rule-user-account-id',
+        kind: 'json-path',
+        target: '$.account.id',
+        scope: 'both',
+      }),
+    );
     state.pushRuntimeUpdate({
       state: {
         phase: 'running',
@@ -232,8 +241,32 @@ describe('workspace recording review state', () => {
     expect(hydrated.targetUrl).toBe('https://example.test/login');
     expect(hydrated.recordingSession.present.steps).toHaveLength(1);
     expect(hydrated.recordingSession.present.steps[0]?.title).toBe('Fill Email');
+    expect(hydrated.redactionRules).toHaveLength(1);
+    expect(hydrated.redactionRules[0]).toMatchObject({
+      id: 'rule-user-account-id',
+      kind: 'json-path',
+      target: '$.account.id',
+      scope: 'both',
+      mode: 'user-defined',
+    });
     expect(hydrated.captures).toHaveLength(0);
     expect(hydrated.timeline).toHaveLength(1);
+  });
+
+  it('adds and removes user-defined redaction rules in workspace state', () => {
+    const state = useWorkspaceStore.getState();
+    const rule = createUserDefinedRedactionRule({
+      id: 'rule-user-session',
+      kind: 'query-param',
+      target: 'sessionId',
+      scope: 'request',
+    });
+
+    state.addRedactionRule(rule);
+    expect(useWorkspaceStore.getState().redactionRules).toEqual([rule]);
+
+    state.removeRedactionRule(rule.id);
+    expect(useWorkspaceStore.getState().redactionRules).toEqual([]);
   });
 
   it('derives request captures, timeline events, and diagnosis from runtime events', () => {

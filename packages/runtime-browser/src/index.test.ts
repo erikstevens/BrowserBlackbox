@@ -464,6 +464,112 @@ describe('BrowserSessionManager', () => {
     });
   });
 
+  it('applies user-defined redaction rules to live request and response capture', async () => {
+    const connectorStub = createConnectorStub();
+    const manager = new BrowserSessionManager(connectorStub.connector);
+    const observedEvents: Array<{ code: string; data?: Record<string, unknown> }> = [];
+    manager.registerSurface(createSurfaceStub());
+    manager.subscribe((event) => {
+      observedEvents.push({
+        code: event.code,
+        data: event.data,
+      });
+    });
+
+    await manager.launch({
+      targetUrl: 'https://example.com/',
+      redactionRules: [
+        {
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: 'rule-user-account-id',
+          kind: 'query-param',
+          target: 'accountId',
+          scope: 'request',
+          mode: 'user-defined',
+        },
+        {
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: 'rule-user-email',
+          kind: 'json-path',
+          target: '$.profile.email',
+          scope: 'both',
+          mode: 'user-defined',
+        },
+        {
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: 'rule-user-trace',
+          kind: 'header',
+          target: 'X-Trace-Token',
+          scope: 'request',
+          mode: 'user-defined',
+        },
+      ],
+    });
+
+    connectorStub.state.setResponseBody(
+      'request-user-rules',
+      JSON.stringify({
+        profile: {
+          email: 'qa@example.test',
+        },
+      }),
+    );
+    connectorStub.state.emitCdpEvent('Network.requestWillBeSent', {
+      requestId: 'request-user-rules',
+      request: {
+        method: 'POST',
+        url: 'https://example.com/api/customer?accountId=abc123',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Trace-Token': 'trace-secret',
+        },
+        postData: JSON.stringify({
+          profile: {
+            email: 'qa@example.test',
+          },
+        }),
+      },
+    });
+    connectorStub.state.emitCdpEvent('Network.responseReceived', {
+      requestId: 'request-user-rules',
+      response: {
+        status: 200,
+        url: 'https://example.com/api/customer?accountId=abc123',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observedEvents.find((event) => event.code === 'network.request.started')?.data)
+      .toMatchObject({
+        headers: {
+          'x-trace-token': '[REDACTED]',
+        },
+        body: {
+          state: 'redacted',
+          text: '{"profile":{"email":"[REDACTED]"}}',
+          redactionRuleIds: ['rule-user-email'],
+        },
+        url: 'https://example.com/api/customer?accountId=%5BREDACTED%5D',
+      });
+    expect(observedEvents.find((event) => event.code === 'network.response.received')?.data)
+      .toMatchObject({
+        url: 'https://example.com/api/customer?accountId=%5BREDACTED%5D',
+      });
+    expect(observedEvents.find((event) => event.code === 'network.response.body.captured')?.data)
+      .toMatchObject({
+        requestId: 'request-user-rules',
+        responseBody: {
+          state: 'redacted',
+          text: '{"profile":{"email":"[REDACTED]"}}',
+          redactionRuleIds: ['rule-user-email'],
+        },
+      });
+  });
+
   it('executes supported replay steps against the attached page', async () => {
     const connectorStub = createConnectorStub();
     const manager = new BrowserSessionManager(connectorStub.connector);

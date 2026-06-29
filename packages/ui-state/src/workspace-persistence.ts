@@ -4,6 +4,7 @@ import {
   type DiagnosisResult,
   domainVersions,
   type RecordedStep,
+  type RedactionRule,
   type RequestResponseCapture,
   type TimelineEvent,
 } from '@browser-blackbox/domain';
@@ -26,6 +27,7 @@ export type WorkspacePersistenceState = {
   recordingSession: RecordingSession;
   workingCopy: WorkspaceWorkingCopyMetadata;
   captures: RequestResponseCapture[];
+  redactionRules: RedactionRule[];
   timeline: TimelineEvent[];
   diagnosis: DiagnosisResult | null;
 };
@@ -85,7 +87,7 @@ export function createStoredRunSnapshotFromWorkspace(
     manifest,
     steps: state.recordingSession.present.steps,
     captures: state.captures,
-    redactionRules: [],
+    redactionRules: state.redactionRules,
     simulationRules: [],
     timeline: state.timeline,
     checkpoints: state.recordingSession.present.checkpoints,
@@ -98,6 +100,7 @@ export function hydrateWorkspaceFromStoredRunSnapshot(snapshot: StoredRunSnapsho
   targetUrl: string;
   steps: RecordedStep[];
   captures: RequestResponseCapture[];
+  redactionRules: RedactionRule[];
   timeline: TimelineEvent[];
   checkpoints: Checkpoint[];
   diagnosis: DiagnosisResult | null;
@@ -114,6 +117,7 @@ export function hydrateWorkspaceFromStoredRunSnapshot(snapshot: StoredRunSnapsho
     targetUrl: snapshot.session.targetUrl,
     steps: snapshot.steps,
     captures: snapshot.captures,
+    redactionRules: snapshot.redactionRules,
     timeline: snapshot.timeline,
     checkpoints: snapshot.checkpoints,
     diagnosis: snapshot.diagnosis,

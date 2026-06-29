@@ -30,7 +30,8 @@
   }
 
   button,
-  input {
+  input,
+  select {
     font: inherit;
   }
 
@@ -222,6 +223,10 @@
 
   .network-header-list {
     @apply mt-4 grid gap-2;
+  }
+
+  .rule-editor-grid {
+    @apply grid;
   }
 
   .network-body-state {

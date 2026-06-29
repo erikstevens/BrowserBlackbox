@@ -373,6 +373,50 @@ test.describe('desktop acceptance', () => {
       'Guaranteed secret redaction is always active',
     );
   });
+
+  test('applies user-defined redaction rules to newly captured request evidence', async () => {
+    await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
+    await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
+    await expect(statusRowPill(window, 'Phase')).toContainText('running');
+
+    const rulesPanel = window.getByTestId('redaction-rules-panel');
+    await window.locator('#redaction-kind').selectOption('json-path');
+    await window.locator('#redaction-scope').selectOption('both');
+    await window.locator('#redaction-target').fill('$.profile.email');
+    await window.getByRole('button', { name: 'Add redaction rule' }).click();
+
+    await expect(rulesPanel).toContainText('$.profile.email');
+
+    await electronApp.evaluate(async ({ BrowserWindow }) => {
+      const browserWindow = BrowserWindow.getAllWindows()[0];
+      const view = browserWindow?.getBrowserView();
+      await view?.webContents.executeJavaScript(`
+        fetch('/api/customer?accountId=abc123', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            profile: {
+              email: 'qa@example.test',
+            },
+          }),
+        });
+      `);
+    });
+
+    const networkPanel = window.getByTestId('network-capture-panel');
+    await expect(networkPanel).toContainText(`${fixtureServer.origin}/api/customer?accountId=abc123`);
+    await networkPanel.getByRole('button', { name: /\/api\/customer/ }).click();
+
+    await expect(window.getByTestId('request-detail-view')).toContainText(
+      `${fixtureServer.origin}/api/customer?accountId=abc123`,
+    );
+    await expect(window.getByTestId('request-body-section')).toContainText('[REDACTED]');
+    await expect(window.getByTestId('request-body-section')).not.toContainText('qa@example.test');
+    await expect(window.getByTestId('response-body-section')).toContainText('Capture unavailable');
+    await expect(window.getByTestId('response-body-section')).not.toContainText('qa@example.test');
+  });
 });
 
 async function createFixtureServer(): Promise<FixtureServer> {
@@ -386,6 +430,19 @@ async function createFixtureServer(): Promise<FixtureServer> {
     if (request.url === '/api/login' && request.method === 'POST') {
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ ok: true, token: 'opaque-login-token' }));
+      return;
+    }
+
+    if (request.url?.startsWith('/api/customer') && request.method === 'POST') {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          profile: {
+            email: 'qa@example.test',
+          },
+        }),
+      );
       return;
     }
 

@@ -5,6 +5,7 @@ import type {
   BrowserContextSnapshot,
   Checkpoint,
   RecordedStep,
+  RedactionRule,
 } from '@browser-blackbox/domain';
 import { chromium } from 'playwright';
 import type {
@@ -127,6 +128,7 @@ export class BrowserSessionManager {
   >();
   private surface: ManagedBrowserSurface | null = null;
   private state: BrowserRuntimeState = DEFAULT_STATE;
+  private activeRedactionRules: RedactionRule[] = [];
 
   constructor(private readonly connector: PlaywrightConnector = defaultConnector) {}
 
@@ -148,6 +150,10 @@ export class BrowserSessionManager {
   unregisterSurface(): void {
     this.surface = null;
     this.state = { ...DEFAULT_STATE };
+  }
+
+  setRedactionRules(rules: RedactionRule[]): void {
+    this.activeRedactionRules = [...rules];
   }
 
   async launch(request: BrowserLaunchRequest): Promise<BrowserRuntimeCommandResult> {
@@ -174,6 +180,7 @@ export class BrowserSessionManager {
     }
 
     await this.stop();
+    this.activeRedactionRules = [...(request.redactionRules ?? [])];
     this.state = {
       phase: 'launching',
       targetUrl: parsedUrl.toString(),
@@ -309,6 +316,7 @@ export class BrowserSessionManager {
   async executeReplay(
     request: BrowserReplayRequest,
   ): Promise<BrowserReplayCommandResult> {
+    this.activeRedactionRules = [...(request.redactionRules ?? this.activeRedactionRules)];
     if (this.state.phase !== 'running' || this.page === null) {
       throw new Error('A managed browser session must be running before replay can execute.');
     }
@@ -555,9 +563,18 @@ export class BrowserSessionManager {
       const requestId = typeof params?.requestId === 'string' ? params.requestId : null;
       const requestMethod = typeof request?.method === 'string' ? request.method : 'UNKNOWN';
       const requestUrl = typeof request?.url === 'string' ? request.url : 'unknown URL';
-      const requestHeaders = redactSensitiveHeaders(normalizeHeaderRecord(request?.headers));
+      const requestHeaders = redactSensitiveHeaders(
+        normalizeHeaderRecord(request?.headers),
+        this.activeRedactionRules,
+        'request',
+      );
       const requestContentType = requestHeaders['content-type'];
-      const requestBody = captureRequestBody(request, requestContentType);
+      const requestBody = captureRequestBody(
+        request,
+        requestContentType,
+        this.activeRedactionRules,
+      );
+      const redactedRequestUrl = redactUrlByRules(requestUrl, this.activeRedactionRules);
       if (requestId !== null) {
         this.requestMap.set(requestId, {
           startedAtMs: Date.now(),
@@ -565,21 +582,21 @@ export class BrowserSessionManager {
           requestBody,
           requestContentType,
           requestHeaders,
-          url: requestUrl,
+          url: redactedRequestUrl,
         });
       }
       this.emitEvent(
         'network',
         'network.request.started',
         'info',
-        `${requestMethod} ${requestUrl}`,
+        `${requestMethod} ${redactedRequestUrl}`,
         'cdp',
         {
           headers: requestHeaders,
           body: requestBody,
           method: requestMethod,
           requestId,
-          url: requestUrl,
+          url: redactedRequestUrl,
         },
       );
       return;
@@ -605,7 +622,11 @@ export class BrowserSessionManager {
       const requestRecord = requestId !== null ? this.requestMap.get(requestId) : undefined;
       const status = typeof response?.status === 'number' ? response.status : 'unknown';
       const responseUrl = typeof response?.url === 'string' ? response.url : 'unknown URL';
-      const responseHeaders = redactSensitiveHeaders(normalizeHeaderRecord(response?.headers));
+      const responseHeaders = redactSensitiveHeaders(
+        normalizeHeaderRecord(response?.headers),
+        this.activeRedactionRules,
+        'response',
+      );
       const timings = normalizeNetworkTimings(response?.timing);
       const correlationIds = collectCorrelationIds(
         requestRecord?.requestHeaders ?? {},
@@ -629,13 +650,15 @@ export class BrowserSessionManager {
             typeof response?.protocol === 'string' ? response.protocol : undefined,
           responseStatus: typeof response?.status === 'number' ? response.status : undefined,
           timings,
+          url: redactUrlByRules(responseUrl, this.activeRedactionRules),
         });
       }
+      const redactedResponseUrl = redactUrlByRules(responseUrl, this.activeRedactionRules);
       this.emitEvent(
         'network',
         'network.response.received',
         'info',
-        `Response ${status} from ${responseUrl}`,
+        `Response ${status} from ${redactedResponseUrl}`,
         'cdp',
         {
           correlationIds,
@@ -652,11 +675,11 @@ export class BrowserSessionManager {
           requestId,
           status,
           timings,
-          url: responseUrl,
+          url: redactedResponseUrl,
         },
       );
       if (requestId !== null) {
-        void this.emitResponseBodyEvent(requestId, responseUrl);
+        void this.emitResponseBodyEvent(requestId, redactedResponseUrl);
       }
       return;
     }
@@ -998,6 +1021,7 @@ export class BrowserSessionManager {
         requestRecord.responseContentType,
         false,
         responseUrl,
+        this.activeRedactionRules,
       );
       this.requestMap.set(requestId, {
         ...requestRecord,
@@ -1303,6 +1327,7 @@ function collectCorrelationIds(
 function captureRequestBody(
   request: Record<string, unknown> | null,
   contentType?: string,
+  redactionRules: RedactionRule[] = [],
 ): CaptureBodyPayload {
   const postData = typeof request?.postData === 'string' ? request.postData : null;
   if (postData === null) {
@@ -1313,7 +1338,7 @@ function captureRequestBody(
     };
   }
 
-  return captureTextBody(postData, contentType, true);
+  return captureTextBody(postData, contentType, true, undefined, redactionRules);
 }
 
 function captureTextBody(
@@ -1321,6 +1346,7 @@ function captureTextBody(
   contentType: string | undefined,
   requestScoped: boolean,
   targetUrl?: string,
+  redactionRules: RedactionRule[] = [],
 ): CaptureBodyPayload {
   if (!isTextualContentType(contentType)) {
     return {
@@ -1347,7 +1373,13 @@ function captureTextBody(
     };
   }
 
-  const redacted = redactSensitiveText(text, contentType, requestScoped);
+  const redacted = redactSensitiveText(
+    text,
+    contentType,
+    requestScoped,
+    redactionRules,
+    requestScoped ? 'request' : 'response',
+  );
   if (redacted.redactionRuleIds.length > 0) {
     return {
       state: 'redacted',
@@ -1397,9 +1429,29 @@ function isSensitiveEndpoint(targetUrl?: string): boolean {
   return CAPTURE_POLICY.sensitiveEndpointPatterns.some((pattern) => pattern.test(targetUrl));
 }
 
-function redactSensitiveHeaders(headers: Record<string, string>): Record<string, string> {
+function redactSensitiveHeaders(
+  headers: Record<string, string>,
+  redactionRules: RedactionRule[],
+  scope: 'request' | 'response',
+): Record<string, string> {
   return Object.entries(headers).reduce<Record<string, string>>((next, [key, value]) => {
-    next[key] = isSensitiveHeader(key) ? '[REDACTED]' : value;
+    let nextValue = isSensitiveHeader(key) ? '[REDACTED]' : value;
+
+    for (const rule of redactionRules) {
+      if (rule.mode !== 'user-defined' || !matchesRuleScope(rule.scope, scope)) {
+        continue;
+      }
+
+      if (rule.kind === 'header' && key.toLowerCase() === rule.target.toLowerCase()) {
+        nextValue = '[REDACTED]';
+      }
+
+      if (rule.kind === 'cookie' && /^(cookie|set-cookie)$/i.test(key)) {
+        nextValue = redactCookieHeader(nextValue, rule.target);
+      }
+    }
+
+    next[key] = nextValue;
     return next;
   }, {});
 }
@@ -1414,6 +1466,8 @@ function redactSensitiveText(
   text: string,
   contentType: string | undefined,
   requestScoped: boolean,
+  redactionRules: RedactionRule[],
+  scope: 'request' | 'response',
 ): {
   text: string;
   redactionRuleIds: string[];
@@ -1446,10 +1500,158 @@ function redactSensitiveText(
     nextText = '[REDACTED JSON BODY]';
   }
 
+  for (const rule of redactionRules) {
+    if (rule.mode !== 'user-defined' || !matchesRuleScope(rule.scope, scope)) {
+      continue;
+    }
+
+    const before = nextText;
+    nextText = applyUserDefinedRuleToText(nextText, normalizedContentType, rule, requestScoped);
+    if (nextText !== before) {
+      redactionRuleIds.add(rule.id);
+    }
+  }
+
   return {
     text: nextText,
     redactionRuleIds: [...redactionRuleIds],
   };
+}
+
+function redactUrlByRules(url: string, redactionRules: RedactionRule[]): string {
+  if (!url) {
+    return url;
+  }
+
+  let parsed: URL;
+
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+
+  let changed = false;
+  for (const rule of redactionRules) {
+    if (
+      rule.mode !== 'user-defined' ||
+      rule.kind !== 'query-param' ||
+      !matchesRuleScope(rule.scope, 'request')
+    ) {
+      continue;
+    }
+
+    if (parsed.searchParams.has(rule.target)) {
+      parsed.searchParams.set(rule.target, '[REDACTED]');
+      changed = true;
+    }
+  }
+
+  return changed ? parsed.toString() : url;
+}
+
+function applyUserDefinedRuleToText(
+  text: string,
+  normalizedContentType: string,
+  rule: RedactionRule,
+  requestScoped: boolean,
+): string {
+  switch (rule.kind) {
+    case 'json-path':
+      return redactJsonPathText(text, rule.target);
+    case 'form-field':
+      return redactKeyValueField(text, rule.target);
+    case 'query-param':
+      return requestScoped ? redactKeyValueField(text, rule.target) : text;
+    case 'regex':
+      return redactRegexText(text, rule.target);
+    case 'cookie':
+      return normalizedContentType.includes('cookie') ? redactCookieHeader(text, rule.target) : text;
+    case 'header':
+      return text;
+    default:
+      return text;
+  }
+}
+
+function matchesRuleScope(
+  ruleScope: RedactionRule['scope'],
+  targetScope: 'request' | 'response',
+): boolean {
+  return ruleScope === 'both' || ruleScope === targetScope;
+}
+
+function redactCookieHeader(value: string, cookieName: string): string {
+  const pattern = new RegExp(`(^|[;\\s])(${escapeForRegExp(cookieName)})=([^;]*)`, 'gi');
+  return value.replace(pattern, (_match, prefix: string, key: string) => {
+    return `${prefix}${key}=[REDACTED]`;
+  });
+}
+
+function redactKeyValueField(text: string, key: string): string {
+  const pattern = new RegExp(`(^|[?&])(${escapeForRegExp(key)})=([^&]*)`, 'gi');
+  return text.replace(pattern, (_match, prefix: string, matchedKey: string) => {
+    return `${prefix}${matchedKey}=[REDACTED]`;
+  });
+}
+
+function redactRegexText(text: string, pattern: string): string {
+  try {
+    return text.replace(new RegExp(pattern, 'gi'), '[REDACTED]');
+  } catch {
+    return text;
+  }
+}
+
+function redactJsonPathText(text: string, jsonPath: string): string {
+  if (!jsonPath.startsWith('$.')) {
+    return text;
+  }
+
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    const segments = jsonPath
+      .slice(2)
+      .split('.')
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+
+    if (segments.length === 0) {
+      return text;
+    }
+
+    if (!redactJsonPathValue(parsed, segments)) {
+      return text;
+    }
+
+    return JSON.stringify(parsed);
+  } catch {
+    return text;
+  }
+}
+
+function redactJsonPathValue(value: unknown, segments: string[]): boolean {
+  if (segments.length === 0 || typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const [head, ...tail] = segments;
+  const record = value as Record<string, unknown>;
+
+  if (!(head in record)) {
+    return false;
+  }
+
+  if (tail.length === 0) {
+    record[head] = '[REDACTED]';
+    return true;
+  }
+
+  return redactJsonPathValue(record[head], tail);
+}
+
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function isRestorableCheckpoint(checkpoint: Checkpoint): checkpoint is Checkpoint & {

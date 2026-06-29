@@ -1,4 +1,9 @@
-import type { BrowserContextSnapshot, Checkpoint, RecordedStep } from '@browser-blackbox/domain';
+import type {
+  BrowserContextSnapshot,
+  Checkpoint,
+  RecordedStep,
+  RedactionRule,
+} from '@browser-blackbox/domain';
 
 export type BrowserRuntimePhase =
   | 'idle'
@@ -9,6 +14,7 @@ export type BrowserRuntimePhase =
 
 export type BrowserLaunchRequest = {
   targetUrl: string;
+  redactionRules?: RedactionRule[];
 };
 
 export type BrowserRuntimeState = {
@@ -44,6 +50,7 @@ export type BrowserReplayRequest = {
   steps: RecordedStep[];
   checkpoints: Checkpoint[];
   plan: BrowserReplayPlan;
+  redactionRules?: RedactionRule[];
 };
 
 export type BrowserReplayCommandResult = BrowserRuntimeCommandResult & {

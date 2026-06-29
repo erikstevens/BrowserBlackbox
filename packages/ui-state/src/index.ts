@@ -3,6 +3,7 @@ import {
   type BrowserContextSnapshot,
   type DiagnosisResult,
   type InspectionMetadata,
+  parseRedactionRule,
   parseDiagnosisResult,
   parseInspectionMetadata,
   parseRequestResponseCapture,
@@ -14,6 +15,7 @@ import {
   type AssertionStep,
   type Checkpoint,
   type RecordedStep,
+  type RedactionRule,
   type RequestResponseCapture,
   type TimelineEvent,
 } from '@browser-blackbox/domain';
@@ -63,6 +65,7 @@ type WorkspaceState = {
   runtimeEvents: BrowserRuntimeEvent[];
   currentInspection: InspectionMetadata | null;
   captures: RequestResponseCapture[];
+  redactionRules: RedactionRule[];
   timeline: TimelineEvent[];
   diagnosis: DiagnosisResult | null;
   recordingSession: RecordingSession;
@@ -81,6 +84,8 @@ type WorkspaceState = {
   undoRecordingEdit: () => void;
   redoRecordingEdit: () => void;
   beginRuntimeCapture: (targetUrl: string, sessionId: string | null) => void;
+  addRedactionRule: (rule: RedactionRule) => void;
+  removeRedactionRule: (ruleId: string) => void;
   hydrateWorkingCopySnapshot: (snapshot: StoredRunSnapshot) => void;
   exportWorkingCopySnapshot: () => StoredRunSnapshot;
   previewReplayFromStart: () => void;
@@ -120,6 +125,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
     runtimeEvents: [],
     currentInspection: null,
     captures: [],
+    redactionRules: [],
     timeline: [],
     diagnosis: null,
     recordingSession: createWorkspaceRecordingSession(),
@@ -282,6 +288,14 @@ export function createInitialWorkspaceState(): WorkspaceState {
           }),
         };
       }),
+    addRedactionRule: (rule) =>
+      useWorkspaceStore.setState((state) => ({
+        redactionRules: deduplicateRedactionRules([...state.redactionRules, rule]),
+      })),
+    removeRedactionRule: (ruleId) =>
+      useWorkspaceStore.setState((state) => ({
+        redactionRules: state.redactionRules.filter((rule) => rule.id !== ruleId),
+      })),
     hydrateWorkingCopySnapshot: (snapshot) =>
       useWorkspaceStore.setState((state) => {
         const hydrated = hydrateWorkspaceFromStoredRunSnapshot(snapshot);
@@ -291,6 +305,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
           targetUrl: hydrated.targetUrl,
           workingCopy: hydrated.metadata,
           captures: hydrated.captures,
+          redactionRules: hydrated.redactionRules,
           timeline: hydrated.timeline,
           diagnosis: hydrated.diagnosis,
           replayPlan: null,
@@ -310,6 +325,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
         recordingSession: useWorkspaceStore.getState().recordingSession,
         workingCopy: useWorkspaceStore.getState().workingCopy,
         captures: useWorkspaceStore.getState().captures,
+        redactionRules: useWorkspaceStore.getState().redactionRules,
         timeline: useWorkspaceStore.getState().timeline,
         diagnosis: useWorkspaceStore.getState().diagnosis,
       }),
@@ -399,6 +415,35 @@ export function createInitialWorkspaceState(): WorkspaceState {
         };
       }),
   };
+}
+
+function deduplicateRedactionRules(rules: RedactionRule[]): RedactionRule[] {
+  const seen = new Set<string>();
+
+  return rules.filter((rule) => {
+    if (seen.has(rule.id)) {
+      return false;
+    }
+
+    seen.add(rule.id);
+    return true;
+  });
+}
+
+export function createUserDefinedRedactionRule(input: {
+  id: string;
+  kind: RedactionRule['kind'];
+  target: string;
+  scope: RedactionRule['scope'];
+}): RedactionRule {
+  return parseRedactionRule({
+    schemaVersion: domainVersions.domainSchemaVersion,
+    id: input.id,
+    kind: input.kind,
+    target: input.target,
+    scope: input.scope,
+    mode: 'user-defined',
+  });
 }
 
 export const useWorkspaceStore = create<WorkspaceState>(() =>
