@@ -73,3 +73,28 @@ export type ArtifactCompatibilityAssessment =
       manifestVersion: string;
       supportedMajorVersions: number[];
     };
+
+export type ArtifactExportWarning = {
+  captureId: string;
+  side: 'request' | 'response';
+  url: string;
+  reason:
+    | 'email-like-content'
+    | 'credential-keyword'
+    | 'authorization-token-pattern'
+    | 'session-identifier-pattern';
+  preview: string;
+};
+
+export type ArtifactExportSafetyAssessment = {
+  warningCount: number;
+  findings: ArtifactExportWarning[];
+};
+
+export type ArtifactExportMode = 'safe-redacted' | 'unsafe-unredacted';
+
+export type ArtifactBundleExportResult = {
+  assessment: ArtifactExportSafetyAssessment;
+  mode: ArtifactExportMode;
+  rootDirectory: string;
+};

@@ -6,6 +6,11 @@ import {
   type RedactionRule,
   type RequestResponseCapture,
 } from '@browser-blackbox/domain';
+import type {
+  ArtifactBundleExportResult,
+  ArtifactExportMode,
+} from '@browser-blackbox/persistence/src/contracts';
+import { assessArtifactExportSafety } from '@browser-blackbox/persistence/src/export-safety';
 import {
   createUserDefinedRedactionRule,
   getRecordingUndoAvailability,
@@ -72,6 +77,10 @@ export function App() {
   const [newRuleKind, setNewRuleKind] = useState<RedactionRule['kind']>('json-path');
   const [newRuleScope, setNewRuleScope] = useState<RedactionRule['scope']>('both');
   const [newRuleTarget, setNewRuleTarget] = useState('');
+  const [acknowledgeVisibleBodyExport, setAcknowledgeVisibleBodyExport] = useState(false);
+  const [pendingExportMode, setPendingExportMode] = useState<ArtifactExportMode | null>(null);
+  const [lastArtifactExport, setLastArtifactExport] =
+    useState<ArtifactBundleExportResult | null>(null);
   const selectedRecordedStep = getSelectedRecordedStep(recordingSession);
   const relatedCaptures =
     currentInspection === null
@@ -85,6 +94,7 @@ export function App() {
     captures[0] ??
     null;
   const { canUndo, canRedo } = getRecordingUndoAvailability(recordingSession);
+  const artifactExportAssessment = assessArtifactExportSafety(exportWorkingCopySnapshot());
   const selectedStepIndex = selectedRecordedStep
     ? recordingSession.present.steps.findIndex((step) => step.id === selectedRecordedStep.id)
     : -1;
@@ -247,6 +257,21 @@ export function App() {
   async function toggleInspectionMode(): Promise<void> {
     const nextEnabled = await window.desktopShell.setInspectionMode(!inspectionModeEnabled);
     setInspectionModeEnabled(nextEnabled);
+  }
+
+  async function exportArtifactBundle(mode: ArtifactExportMode): Promise<void> {
+    setPendingExportMode(mode);
+
+    try {
+      const result = await window.desktopShell.exportArtifactBundle({
+        snapshot: exportWorkingCopySnapshot(),
+        mode,
+      });
+      setLastArtifactExport(result);
+      setAcknowledgeVisibleBodyExport(false);
+    } finally {
+      setPendingExportMode(null);
+    }
   }
 
   function createRedactionRule(): void {
@@ -669,6 +694,120 @@ export function App() {
                     evidence.
                   </p>
                 )}
+              </div>
+            </div>
+          </article>
+
+          <article className="panel full-width-panel" data-testid="artifact-export-panel">
+            <div className="panel-header">
+              <div>
+                <p className="section-label">Artifact export</p>
+                <p className="panel-copy">
+                  Export a reopenable run artifact bundle. Default export removes
+                  visible body payloads that still match the export-safety heuristic
+                  unless you explicitly choose the visible-body override path.
+                </p>
+              </div>
+            </div>
+            <div className="network-detail-grid">
+              <div className="network-detail-card">
+                <p className="section-label">Safety assessment</p>
+                <div className="runtime-status">
+                  <p className="status-row">
+                    <span className="status-label">Warning count</span>
+                    <span className="status-value">
+                      {artifactExportAssessment.warningCount}
+                    </span>
+                  </p>
+                  <p className="panel-copy">
+                    {artifactExportAssessment.warningCount === 0
+                      ? 'No visible-body export warnings are currently detected.'
+                      : 'Some captured full bodies still look sensitive. The safe export path will exclude those bodies unless you explicitly override it.'}
+                  </p>
+                </div>
+                <div className="checkpoint-list">
+                  {artifactExportAssessment.findings.length === 0 ? (
+                    <p className="empty-state">
+                      The current working copy is ready for default artifact export.
+                    </p>
+                  ) : (
+                    artifactExportAssessment.findings.map((finding) => (
+                      <div className="step-review-card" key={`${finding.captureId}-${finding.side}`}>
+                        <div className="step-review-header">
+                          <span className="step-index">{finding.side}</span>
+                          <span className="status-value">{finding.reason}</span>
+                        </div>
+                        <p className="step-summary">{finding.url}</p>
+                        <p className="inspection-reason">{finding.preview}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="network-detail-card">
+                <p className="section-label">Export actions</p>
+                <p className="inspection-reason">
+                  Default export preserves mandatory and configured redaction behavior
+                  and excludes warning-flagged visible bodies from the artifact bundle.
+                </p>
+                <div className="button-row">
+                  <button
+                    className="button button-primary"
+                    disabled={pendingExportMode !== null}
+                    onClick={() => void exportArtifactBundle('safe-redacted')}
+                    type="button"
+                  >
+                    Export safe artifact bundle
+                  </button>
+                </div>
+                {artifactExportAssessment.warningCount > 0 ? (
+                  <>
+                    <label className="export-warning-toggle">
+                      <input
+                        checked={acknowledgeVisibleBodyExport}
+                        onChange={(event) =>
+                          setAcknowledgeVisibleBodyExport(event.target.checked)
+                        }
+                        type="checkbox"
+                      />
+                      <span>
+                        I understand this export may contain visible personal,
+                        credential, or session-like payload data.
+                      </span>
+                    </label>
+                    <div className="button-row">
+                      <button
+                        className="button button-danger"
+                        disabled={
+                          pendingExportMode !== null || !acknowledgeVisibleBodyExport
+                        }
+                        onClick={() => void exportArtifactBundle('unsafe-unredacted')}
+                        type="button"
+                      >
+                        Export with visible bodies
+                      </button>
+                    </div>
+                  </>
+                ) : null}
+                {lastArtifactExport ? (
+                  <div className="runtime-status" data-testid="artifact-export-result">
+                    <p className="status-row">
+                      <span className="status-label">Last export mode</span>
+                      <span className="status-value">{lastArtifactExport.mode}</span>
+                    </p>
+                    <p className="status-row">
+                      <span className="status-label">Bundle path</span>
+                      <span className="status-value">{lastArtifactExport.rootDirectory}</span>
+                    </p>
+                    <p className="status-row">
+                      <span className="status-label">Warnings recorded</span>
+                      <span className="status-value">
+                        {lastArtifactExport.assessment.warningCount}
+                      </span>
+                    </p>
+                  </div>
+                ) : null}
               </div>
             </div>
           </article>

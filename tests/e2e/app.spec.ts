@@ -417,6 +417,47 @@ test.describe('desktop acceptance', () => {
     await expect(window.getByTestId('response-body-section')).toContainText('Capture unavailable');
     await expect(window.getByTestId('response-body-section')).not.toContainText('qa@example.test');
   });
+
+  test('exports a safe artifact bundle and requires explicit action for visible-body override', async () => {
+    await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
+    await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
+    await expect(statusRowPill(window, 'Phase')).toContainText('running');
+
+    await electronApp.evaluate(async ({ BrowserWindow }) => {
+      const browserWindow = BrowserWindow.getAllWindows()[0];
+      const view = browserWindow?.getBrowserView();
+      await view?.webContents.executeJavaScript(`
+        fetch('/api/profile', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            email: 'qa@example.test',
+          }),
+        });
+      `);
+    });
+
+    await expect(window.locator('.event-stream')).toContainText(
+      `POST ${fixtureServer.origin}/api/profile`,
+    );
+
+    const exportPanel = window.getByTestId('artifact-export-panel');
+    await expect(exportPanel).toContainText('Some captured full bodies still look sensitive');
+
+    await window.getByRole('button', { name: 'Export safe artifact bundle' }).click();
+    const exportResult = window.getByTestId('artifact-export-result');
+    await expect(exportResult).toContainText('safe-redacted');
+    await expect(exportResult).toContainText('browser-blackbox-export-');
+
+    await window
+      .getByLabel('I understand this export may contain visible personal, credential, or session-like payload data.')
+      .check();
+    await window.getByRole('button', { name: 'Export with visible bodies' }).click();
+
+    await expect(exportResult).toContainText('unsafe-unredacted');
+  });
 });
 
 async function createFixtureServer(): Promise<FixtureServer> {
@@ -434,6 +475,19 @@ async function createFixtureServer(): Promise<FixtureServer> {
     }
 
     if (request.url?.startsWith('/api/customer') && request.method === 'POST') {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          profile: {
+            email: 'qa@example.test',
+          },
+        }),
+      );
+      return;
+    }
+
+    if (request.url === '/api/profile' && request.method === 'POST') {
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end(
         JSON.stringify({

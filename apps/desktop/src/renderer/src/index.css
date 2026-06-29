@@ -229,6 +229,14 @@
     @apply grid;
   }
 
+  .export-warning-toggle {
+    @apply mt-4 flex items-start gap-3 rounded-2xl border border-shell-border bg-black/10 p-4 text-sm leading-[1.7] text-shell-muted;
+  }
+
+  .export-warning-toggle input {
+    @apply mt-1;
+  }
+
   .network-body-state {
     @apply mt-4 grid gap-3;
   }

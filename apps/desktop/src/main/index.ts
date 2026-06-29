@@ -1,10 +1,21 @@
 import { app, BrowserView, BrowserWindow, ipcMain } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { mkdtemp } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { domainVersions, parseInspectionMetadata, parseRedactionRule } from '@browser-blackbox/domain';
 import { FileBackedSqliteStore } from '@browser-blackbox/persistence/src/file-store';
-import type { StoredRunSnapshot } from '@browser-blackbox/persistence/src/contracts';
+import type {
+  ArtifactBundleExportResult,
+  ArtifactExportMode,
+  ArtifactExportSafetyAssessment,
+  StoredRunSnapshot,
+} from '@browser-blackbox/persistence/src/contracts';
+import {
+  assessArtifactExportSafety,
+  prepareSnapshotForArtifactExport,
+  writeArtifactBundle,
+} from '@browser-blackbox/persistence';
 import { createSqliteEngine } from '@browser-blackbox/persistence/src/sqlite';
 import { BrowserSessionManager } from '@browser-blackbox/runtime-browser';
 import type {
@@ -174,6 +185,42 @@ function registerIpcHandlers(): void {
     async (_event, snapshot: StoredRunSnapshot): Promise<void> => {
       const store = await getWorkingCopyStore();
       await store.saveSnapshot(snapshot);
+    },
+  );
+
+  ipcMain.handle(
+    'workspace:assess-artifact-export',
+    async (_event, snapshot: StoredRunSnapshot): Promise<ArtifactExportSafetyAssessment> => {
+      return assessArtifactExportSafety(snapshot);
+    },
+  );
+
+  ipcMain.handle(
+    'workspace:export-artifact-bundle',
+    async (
+      _event,
+      request: {
+        snapshot: StoredRunSnapshot;
+        mode: ArtifactExportMode;
+      },
+    ): Promise<ArtifactBundleExportResult> => {
+      const exportDirectory = await mkdtemp(
+        join(app.getPath('temp'), 'browser-blackbox-export-'),
+      );
+      const prepared = prepareSnapshotForArtifactExport(request.snapshot, request.mode);
+      const exportSnapshot = createExportArtifactSnapshot(prepared.snapshot);
+
+      await writeArtifactBundle({
+        rootDirectory: exportDirectory,
+        snapshot: exportSnapshot,
+        artifactContents: createExportArtifactContents(exportSnapshot, prepared.assessment, request.mode),
+      });
+
+      return {
+        assessment: prepared.assessment,
+        mode: request.mode,
+        rootDirectory: exportDirectory,
+      };
     },
   );
 
@@ -503,6 +550,98 @@ function registerWorkspaceBrowserListeners(view: BrowserView): void {
       },
     });
   });
+}
+
+function createExportArtifactSnapshot(snapshot: StoredRunSnapshot): StoredRunSnapshot {
+  return {
+    ...snapshot,
+    manifest: {
+      ...snapshot.manifest,
+      artifacts: [
+        {
+          path: 'workspace/replay-metadata.json',
+          kind: 'replay-metadata',
+          required: false,
+          present: true,
+        },
+        {
+          path: 'logs/timeline.json',
+          kind: 'timeline',
+          required: false,
+          present: true,
+        },
+        {
+          path: 'network/api-capture.json',
+          kind: 'api-capture',
+          required: false,
+          present: true,
+        },
+        {
+          path: 'reports/export-safety.json',
+          kind: 'report',
+          required: false,
+          present: true,
+        },
+        {
+          path: 'reports/summary.md',
+          kind: 'report',
+          required: false,
+          present: true,
+        },
+      ],
+    },
+  };
+}
+
+function createExportArtifactContents(
+  snapshot: StoredRunSnapshot,
+  assessment: ArtifactExportSafetyAssessment,
+  mode: ArtifactExportMode,
+): Record<string, string> {
+  return {
+    'workspace/replay-metadata.json': `${JSON.stringify(
+      {
+        runId: snapshot.session.runId,
+        targetUrl: snapshot.session.targetUrl,
+        exportedAt: new Date().toISOString(),
+        redactionPolicyVersion: snapshot.manifest.redactionPolicyVersion,
+      },
+      null,
+      2,
+    )}\n`,
+    'logs/timeline.json': `${JSON.stringify({ timeline: snapshot.timeline }, null, 2)}\n`,
+    'network/api-capture.json': `${JSON.stringify({ captures: snapshot.captures }, null, 2)}\n`,
+    'reports/export-safety.json': `${JSON.stringify(
+      {
+        mode,
+        warningCount: assessment.warningCount,
+        findings: assessment.findings,
+      },
+      null,
+      2,
+    )}\n`,
+    'reports/summary.md': createExportSummaryReport(snapshot, assessment, mode),
+  };
+}
+
+function createExportSummaryReport(
+  snapshot: StoredRunSnapshot,
+  assessment: ArtifactExportSafetyAssessment,
+  mode: ArtifactExportMode,
+): string {
+  return [
+    '# QA Browser Shell Export Summary',
+    '',
+    `- Run ID: ${snapshot.session.runId}`,
+    `- Target URL: ${snapshot.session.targetUrl}`,
+    `- Export mode: ${mode}`,
+    `- Warning count: ${assessment.warningCount}`,
+    '',
+    assessment.warningCount === 0
+      ? 'No export-safety warnings were detected.'
+      : 'Visible-body export warnings were detected and recorded in `reports/export-safety.json`.',
+    '',
+  ].join('\n');
 }
 
 function publishRuntimeEvent(event: BrowserRuntimeEvent): void {

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { ARTIFACT_FORMAT_VERSION, DomainValidationError } from '@browser-blackbox/domain';
 import { describe, expect, it } from 'vitest';
 import {
+  assessArtifactExportSafety,
   assessArtifactManifestCompatibility,
   applyMigrations,
   countAppliedMigrations,
@@ -15,6 +16,7 @@ import {
   migrations,
   readArtifactBundle,
   serializeSnapshotEnvelope,
+  prepareSnapshotForArtifactExport,
   storedArtifactContentsFixture,
   SqliteRunRepository,
   storedRunSnapshotFixture,
@@ -172,6 +174,45 @@ describe('snapshot envelope serialization', () => {
 });
 
 describe('artifact bundle io', () => {
+  it('assesses visible full bodies and strips them from safe export snapshots', () => {
+    const snapshot = {
+      ...storedRunSnapshotFixture,
+      captures: [
+        {
+          ...storedRunSnapshotFixture.captures[0],
+          request: {
+            ...storedRunSnapshotFixture.captures[0]!.request,
+            body: {
+              state: 'full' as const,
+              contentType: 'application/json',
+              text: '{"profile":{"email":"qa@example.test"}}',
+            },
+          },
+        },
+      ],
+    };
+
+    const assessment = assessArtifactExportSafety(snapshot);
+    expect(assessment).toEqual({
+      warningCount: 1,
+      findings: [
+        expect.objectContaining({
+          captureId: 'request-auth-login',
+          side: 'request',
+          reason: 'email-like-content',
+        }),
+      ],
+    });
+
+    const prepared = prepareSnapshotForArtifactExport(snapshot, 'safe-redacted');
+    expect(prepared.snapshot.captures[0]?.request.body).toMatchObject({
+      state: 'excluded',
+    });
+    expect(prepared.snapshot.captures[0]?.response?.body).toMatchObject({
+      state: 'full',
+    });
+  });
+
   it('writes and reads a reopenable artifact bundle', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'browser-blackbox-bundle-'));
 

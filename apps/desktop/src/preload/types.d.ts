@@ -1,4 +1,8 @@
-import type { StoredRunSnapshot } from '@browser-blackbox/persistence/src/contracts';
+import type {
+  ArtifactBundleExportResult,
+  ArtifactExportSafetyAssessment,
+  StoredRunSnapshot,
+} from '@browser-blackbox/persistence/src/contracts';
 import type { RedactionRule } from '@browser-blackbox/domain';
 import type {
   BrowserRuntimeDiagnostics,
@@ -24,6 +28,13 @@ export type DesktopShellApi = {
   stopBrowserSession: () => Promise<BrowserRuntimeCommandResult>;
   loadWorkingCopySnapshot: () => Promise<StoredRunSnapshot | null>;
   saveWorkingCopySnapshot: (snapshot: StoredRunSnapshot) => Promise<void>;
+  assessArtifactExport: (
+    snapshot: StoredRunSnapshot,
+  ) => Promise<ArtifactExportSafetyAssessment>;
+  exportArtifactBundle: (request: {
+    snapshot: StoredRunSnapshot;
+    mode: 'safe-redacted' | 'unsafe-unredacted';
+  }) => Promise<ArtifactBundleExportResult>;
   onBrowserRuntimeEvent: (listener: (update: BrowserRuntimeUpdate) => void) => () => void;
 };
 

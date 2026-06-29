@@ -14,6 +14,10 @@ const desktopShellApi: DesktopShellApi = {
   loadWorkingCopySnapshot: () => ipcRenderer.invoke('workspace:load-working-copy'),
   saveWorkingCopySnapshot: (snapshot) =>
     ipcRenderer.invoke('workspace:save-working-copy', snapshot),
+  assessArtifactExport: (snapshot) =>
+    ipcRenderer.invoke('workspace:assess-artifact-export', snapshot),
+  exportArtifactBundle: (request) =>
+    ipcRenderer.invoke('workspace:export-artifact-bundle', request),
   onBrowserRuntimeEvent: (listener) => {
     const handleRuntimeEvent = (_event: Electron.IpcRendererEvent, update: Parameters<typeof listener>[0]) => {
       listener(update);

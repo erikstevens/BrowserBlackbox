@@ -1,5 +1,6 @@
 export * from './bundle';
 export * from './contracts';
+export * from './export-safety';
 export * from './file-store';
 export * from './fixtures';
 export * from './migrations';
