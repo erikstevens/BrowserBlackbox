@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react';
-import { productSummary, type RecordedStep } from '@browser-blackbox/domain';
+import {
+  productSummary,
+  type CaptureBody,
+  type RecordedStep,
+  type RequestResponseCapture,
+} from '@browser-blackbox/domain';
 import {
   getRecordingUndoAvailability,
   getSelectedRecordedStep,
@@ -58,6 +63,7 @@ export function App() {
   >(null);
   const [inspectionModeEnabled, setInspectionModeEnabled] = useState(false);
   const [persistenceReady, setPersistenceReady] = useState(false);
+  const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
   const selectedRecordedStep = getSelectedRecordedStep(recordingSession);
   const relatedCaptures =
     currentInspection === null
@@ -66,6 +72,10 @@ export function App() {
           const capture = captures.find((entry) => entry.id === requestId);
           return capture ? [capture] : [];
         });
+  const selectedCapture =
+    (selectedCaptureId ? captures.find((capture) => capture.id === selectedCaptureId) : null) ??
+    captures[0] ??
+    null;
   const { canUndo, canRedo } = getRecordingUndoAvailability(recordingSession);
   const selectedStepIndex = selectedRecordedStep
     ? recordingSession.present.steps.findIndex((step) => step.id === selectedRecordedStep.id)
@@ -135,6 +145,19 @@ export function App() {
 
     void window.desktopShell.saveWorkingCopySnapshot(exportWorkingCopySnapshot());
   }, [browserRuntime.sessionId, exportWorkingCopySnapshot, persistenceReady, recordingSession, url]);
+
+  useEffect(() => {
+    if (captures.length === 0) {
+      if (selectedCaptureId !== null) {
+        setSelectedCaptureId(null);
+      }
+      return;
+    }
+
+    if (!selectedCaptureId || !captures.some((capture) => capture.id === selectedCaptureId)) {
+      setSelectedCaptureId(captures[0]?.id ?? null);
+    }
+  }, [captures, selectedCaptureId]);
 
   async function launchManagedChromium(): Promise<void> {
     setPendingAction('launch');
@@ -352,6 +375,171 @@ export function App() {
           <article className="panel full-width-panel">
             <div className="panel-header">
               <div>
+                <p className="section-label">Request detail</p>
+                <p className="panel-copy">
+                  Inspect captured browser requests with canonical body-state explanations,
+                  timing phases, and the current safe-by-default redaction baseline.
+                </p>
+              </div>
+            </div>
+            <div className="network-detail-grid" data-testid="network-capture-panel">
+              <div className="network-capture-list">
+                {captures.length === 0 ? (
+                  <p className="empty-state">
+                    No request evidence has been captured yet. Launch a session and
+                    interact with the page to inspect request and response details here.
+                  </p>
+                ) : (
+                  captures.map((capture) => {
+                    const selected = selectedCapture?.id === capture.id;
+                    return (
+                      <button
+                        key={capture.id}
+                        type="button"
+                        className={`step-review-card network-capture-card${
+                          selected ? ' step-review-card-selected' : ''
+                        }`}
+                        data-testid={`request-card-${capture.id}`}
+                        onClick={() => setSelectedCaptureId(capture.id)}
+                      >
+                        <div className="step-review-header">
+                          <span className="step-index">{capture.request.method}</span>
+                          <span
+                            className={`status-pill ${getCaptureStatusClassName(capture)}`}
+                          >
+                            {describeCaptureOutcome(capture)}
+                          </span>
+                        </div>
+                        <p className="step-title">{formatRequestLabel(capture.request.url)}</p>
+                        <p className="step-summary">{capture.request.url}</p>
+                        <div className="step-review-tags">
+                          <span className="review-tag">
+                            {formatTimestamp(capture.timestamp)}
+                          </span>
+                          <span className="review-tag">{capture.protocol}</span>
+                          {capture.triggeringStepId ? (
+                            <span className="review-tag">linked step</span>
+                          ) : null}
+                          {capture.blocked ? <span className="review-tag">blocked</span> : null}
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="step-editor-shell">
+                {selectedCapture ? (
+                  <div className="network-detail-stack" data-testid="request-detail-view">
+                    <div className="step-editor-header">
+                      <div>
+                        <p className="section-label">Selected request</p>
+                        <h2 className="step-editor-title">
+                          {selectedCapture.request.method}{' '}
+                          {formatRequestLabel(selectedCapture.request.url)}
+                        </h2>
+                      </div>
+                      <div className="step-review-tags">
+                        <span className="review-tag">{selectedCapture.id}</span>
+                        <span className="review-tag">
+                          {selectedCapture.response?.status ??
+                            (selectedCapture.failure ? 'failed' : 'pending')}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="runtime-status">
+                      <p className="status-row">
+                        <span className="status-label">URL</span>
+                        <span className="status-value">{selectedCapture.request.url}</span>
+                      </p>
+                      <p className="status-row">
+                        <span className="status-label">Triggered by step</span>
+                        <span className="status-value">
+                          {selectedCapture.triggeringStepId ?? 'No correlated step'}
+                        </span>
+                      </p>
+                      <p className="status-row">
+                        <span className="status-label">Origin</span>
+                        <span className="status-value">
+                          {describeCaptureOrigin(selectedCapture)}
+                        </span>
+                      </p>
+                      <p className="status-row">
+                        <span className="status-label">Duration</span>
+                        <span className="status-value">
+                          {formatDuration(selectedCapture.durationMs)}
+                        </span>
+                      </p>
+                      <p className="status-row">
+                        <span className="status-label">Correlation IDs</span>
+                        <span className="status-value">
+                          {selectedCapture.correlationIds.join(', ') || 'None'}
+                        </span>
+                      </p>
+                    </div>
+
+                    <div className="network-body-grid">
+                      <RequestBodySection
+                        title="Request payload"
+                        headers={selectedCapture.request.headers}
+                        body={selectedCapture.request.body}
+                        testId="request-body-section"
+                      />
+                      <RequestBodySection
+                        title="Response payload"
+                        headers={selectedCapture.response?.headers ?? null}
+                        body={selectedCapture.response?.body}
+                        status={selectedCapture.response?.status}
+                        failure={selectedCapture.failure}
+                        targetUrl={selectedCapture.request.url}
+                        testId="response-body-section"
+                      />
+                    </div>
+
+                    <div className="network-detail-card">
+                      <p className="section-label">Capture policy</p>
+                      <p className="inspection-reason">
+                        Guaranteed secret redaction is always active for credential-like
+                        transport fields. Additional user-defined masking rules are a
+                        later Phase 7 slice and are not configured in this view yet.
+                      </p>
+                      <p className="inspection-reason">
+                        Full visible bodies may still contain personal or regulated data
+                        unless explicit redaction rules are added before sharing or export.
+                      </p>
+                    </div>
+
+                    <div className="network-detail-card" data-testid="request-timing-panel">
+                      <p className="section-label">Timing phases</p>
+                      {selectedCapture.timings ? (
+                        <div className="timing-grid">
+                          {renderTimingRow('DNS', selectedCapture.timings.dnsMs)}
+                          {renderTimingRow('Connect', selectedCapture.timings.connectMs)}
+                          {renderTimingRow('TLS', selectedCapture.timings.tlsMs)}
+                          {renderTimingRow('Request', selectedCapture.timings.requestMs)}
+                          {renderTimingRow('Response', selectedCapture.timings.responseMs)}
+                        </div>
+                      ) : (
+                        <p className="empty-state">
+                          Chromium timing phases are not available for this request.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="empty-state">
+                    Select a captured request to inspect its request, response, and timing
+                    evidence.
+                  </p>
+                )}
+              </div>
+            </div>
+          </article>
+
+          <article className="panel full-width-panel">
+            <div className="panel-header">
+              <div>
                 <p className="section-label">Inspector lane</p>
                 <p className="panel-copy">
                   Turn on inspect mode to hover live elements in the embedded browser,
@@ -536,6 +724,11 @@ export function App() {
                     <div className="checkpoint-list">
                       {relatedCaptures.map((capture) => (
                         <div className="step-review-card" key={capture.id}>
+                          <button
+                            type="button"
+                            className="network-link-button"
+                            onClick={() => setSelectedCaptureId(capture.id)}
+                          >
                           <div className="step-review-header">
                             <span className="step-index">
                               {capture.request.method}
@@ -554,6 +747,7 @@ export function App() {
                               correlation: {capture.correlationIds.join(', ')}
                             </p>
                           ) : null}
+                          </button>
                         </div>
                       ))}
                     </div>
@@ -1009,6 +1203,180 @@ function describeRecordedStep(step: RecordedStep): string {
   }
 }
 
+function formatRequestLabel(url: string): string {
+  try {
+    const parsedUrl = new URL(url);
+    return `${parsedUrl.pathname || '/'}${parsedUrl.search}`;
+  } catch {
+    return url;
+  }
+}
+
+function describeCaptureOutcome(capture: RequestResponseCapture): string {
+  if (capture.failure) {
+    return 'failed';
+  }
+
+  if (capture.response) {
+    return String(capture.response.status);
+  }
+
+  return 'pending';
+}
+
+function getCaptureStatusClassName(capture: RequestResponseCapture): string {
+  if (capture.failure) {
+    return 'status-error';
+  }
+
+  if (capture.response && capture.response.status >= 400) {
+    return 'status-launching';
+  }
+
+  if (capture.response) {
+    return 'status-running';
+  }
+
+  return 'status-idle';
+}
+
+function describeCaptureOrigin(capture: RequestResponseCapture): string {
+  if (capture.origin.fromCache) {
+    return 'Cache';
+  }
+
+  if (capture.origin.fromServiceWorker) {
+    return 'Service worker';
+  }
+
+  return 'Network';
+}
+
+function formatDuration(durationMs: number | undefined): string {
+  return typeof durationMs === 'number' ? `${durationMs} ms` : 'Unavailable';
+}
+
+function describeBodyState(body: CaptureBody | undefined): string {
+  if (!body) {
+    return 'Unavailable';
+  }
+
+  switch (body.state) {
+    case 'full':
+      return 'Captured in full';
+    case 'redacted':
+      return `Captured with redaction (${body.redactionRuleIds.join(', ')})`;
+    case 'excluded':
+      return 'Capture excluded by policy';
+    case 'truncated':
+      return 'Capture truncated by policy';
+    case 'unavailable':
+      return 'Capture unavailable';
+  }
+}
+
+function renderTimingRow(label: string, value: number | undefined) {
+  return (
+    <p className="status-row" key={label}>
+      <span className="status-label">{label}</span>
+      <span className="status-value">{typeof value === 'number' ? `${value} ms` : 'n/a'}</span>
+    </p>
+  );
+}
+
+function RequestBodySection(props: {
+  title: string;
+  headers: Record<string, string> | null;
+  body: CaptureBody | undefined;
+  status?: number;
+  failure?: {
+    code: string;
+    message: string;
+  };
+  targetUrl?: string;
+  testId: string;
+}) {
+  const { title, headers, body, status, failure, targetUrl, testId } = props;
+  const headerEntries = headers ? Object.entries(headers) : [];
+  const sensitiveEndpoint = isSensitiveEndpoint(targetUrl);
+
+  return (
+    <section className="network-detail-card" data-testid={testId}>
+      <p className="section-label">{title}</p>
+      {typeof status === 'number' ? (
+        <p className="inspection-reason">Status: {status}</p>
+      ) : null}
+      {failure ? (
+        <p className="inspection-reason">
+          Failure: {failure.code} · {failure.message}
+        </p>
+      ) : null}
+      <div className="runtime-status">
+        <p className="status-row">
+          <span className="status-label">Body state</span>
+          <span className="status-value">{describeBodyState(body)}</span>
+        </p>
+        {body?.contentType ? (
+          <p className="status-row">
+            <span className="status-label">Content type</span>
+            <span className="status-value">{body.contentType}</span>
+          </p>
+        ) : null}
+        <p className="status-row">
+          <span className="status-label">Header count</span>
+          <span className="status-value">{headerEntries.length}</span>
+        </p>
+      </div>
+      <div className="network-header-list">
+        {headerEntries.length === 0 ? (
+          <p className="empty-state">No headers were captured for this payload.</p>
+        ) : (
+          headerEntries.map(([key, value]) => (
+            <p className="inspection-reason" key={key}>
+              {key}: {value}
+            </p>
+          ))
+        )}
+      </div>
+      {body ? (
+        <div className="network-body-state">
+          {body.state === 'full' || body.state === 'redacted' ? (
+            <>
+              <p className="inspection-reason">
+                {body.state === 'redacted'
+                  ? 'This body was captured, then masked by explicit deterministic rules.'
+                  : 'This body is visible under the current mandatory redaction baseline.'}
+              </p>
+              <pre className="network-body-text">{body.text}</pre>
+            </>
+          ) : (
+            <>
+              <p className="inspection-reason">
+                {body.reason}
+              </p>
+              {sensitiveEndpoint ? (
+                <p className="inspection-reason">
+                  This request targets a sensitive authentication or session endpoint,
+                  so response-body handling remains safety-constrained even when CDP
+                  cannot return payload bytes.
+                </p>
+              ) : null}
+              <p className="inspection-reason">
+                The UI distinguishes policy exclusions, truncation, and runtime
+                unavailability so missing body content is not mistaken for an empty payload.
+              </p>
+            </>
+          )}
+        </div>
+      ) : (
+        <p className="empty-state">
+          No body payload was captured for this side of the exchange.
+        </p>
+      )}
+    </section>
+  );
+}
+
 
 function ActionEditor(props: {
   step: Extract<RecordedStep, { kind: 'action' }>;
@@ -1121,6 +1489,14 @@ function ActionEditor(props: {
         </p>
       );
   }
+}
+
+function isSensitiveEndpoint(targetUrl: string | undefined): boolean {
+  if (!targetUrl) {
+    return false;
+  }
+
+  return /\/(auth|login|oauth|password|session|token)(?:[/?#]|$)/i.test(targetUrl);
 }
 
 function AssertionEditor(props: {

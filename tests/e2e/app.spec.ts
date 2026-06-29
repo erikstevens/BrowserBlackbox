@@ -323,6 +323,56 @@ test.describe('desktop acceptance', () => {
       `${fixtureServer.origin}/api/login`,
     );
   });
+
+  test('shows request detail bodies, timing phases, and policy explanations', async () => {
+    await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
+    await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
+    await expect(statusRowPill(window, 'Phase')).toContainText('running');
+
+    const networkPanel = window.getByTestId('network-capture-panel');
+
+    await expect(networkPanel).toContainText(`${fixtureServer.origin}/api/health`);
+    await networkPanel.getByRole('button', { name: /\/api\/health/ }).click();
+
+    const requestDetailView = window.getByTestId('request-detail-view');
+    await expect(requestDetailView).toContainText(`${fixtureServer.origin}/api/health`);
+    await expect(window.getByTestId('response-body-section')).toContainText('Captured in full');
+    await expect(window.getByTestId('response-body-section')).toContainText('{"ok":true}');
+    await expect(window.getByTestId('request-timing-panel')).toContainText('Request');
+    await expect(window.getByTestId('request-timing-panel')).toContainText('Response');
+
+    await electronApp.evaluate(async ({ BrowserWindow }) => {
+      const browserWindow = BrowserWindow.getAllWindows()[0];
+      const view = browserWindow?.getBrowserView();
+      await view?.webContents.executeJavaScript(`
+        (() => {
+          const target = document.querySelector('[data-testid="login-submit"]');
+          if (!(target instanceof HTMLElement)) {
+            throw new Error('Login submit target was not found.');
+          }
+          target.click();
+        })();
+      `);
+    });
+
+    await expect(window.locator('.event-stream')).toContainText(
+      `POST ${fixtureServer.origin}/api/login`,
+    );
+    await expect(networkPanel).toContainText(`${fixtureServer.origin}/api/login`);
+    await networkPanel.getByRole('button', { name: /\/api\/login/ }).click();
+
+    await expect(requestDetailView).toContainText(`${fixtureServer.origin}/api/login`);
+    await expect(window.getByTestId('request-body-section')).toContainText('qa@example.test');
+    await expect(window.getByTestId('response-body-section')).toContainText(
+      'Capture unavailable',
+    );
+    await expect(window.getByTestId('response-body-section')).toContainText(
+      'sensitive authentication or session endpoint',
+    );
+    await expect(requestDetailView).toContainText(
+      'Guaranteed secret redaction is always active',
+    );
+  });
 });
 
 async function createFixtureServer(): Promise<FixtureServer> {

@@ -158,6 +158,20 @@
     @apply mt-5 grid gap-5 xl:grid-cols-[minmax(0,20rem)_minmax(0,1fr)];
   }
 
+  .network-detail-grid {
+    @apply mt-5 grid gap-5 xl:grid-cols-[minmax(0,20rem)_minmax(0,1fr)];
+  }
+
+  .network-capture-list,
+  .network-detail-stack,
+  .network-body-grid {
+    @apply grid gap-3;
+  }
+
+  .network-body-grid {
+    @apply xl:grid-cols-2;
+  }
+
   .step-review-list {
     @apply grid gap-3;
   }
@@ -196,6 +210,30 @@
 
   .step-editor-shell {
     @apply rounded-2xl border border-shell-border bg-black/10 p-5;
+  }
+
+  .network-detail-card {
+    @apply rounded-2xl border border-shell-border bg-black/10 p-5;
+  }
+
+  .network-link-button {
+    @apply block w-full border-0 bg-transparent p-0 text-left text-inherit;
+  }
+
+  .network-header-list {
+    @apply mt-4 grid gap-2;
+  }
+
+  .network-body-state {
+    @apply mt-4 grid gap-3;
+  }
+
+  .network-body-text {
+    @apply m-0 overflow-x-auto rounded-2xl border border-shell-border bg-black/20 p-4 text-sm leading-[1.7] text-shell-text whitespace-pre-wrap break-words;
+  }
+
+  .timing-grid {
+    @apply grid gap-3 sm:grid-cols-2 xl:grid-cols-3;
   }
 
   .step-editor-header {
