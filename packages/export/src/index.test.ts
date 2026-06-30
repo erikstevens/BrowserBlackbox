@@ -1,6 +1,15 @@
+import {
+  domainVersions,
+  requestResponseCaptureFixture,
+  type RecordedStep,
+  type RequestResponseCapture,
+} from '@browser-blackbox/domain';
 import { describe, expect, it } from 'vitest';
-import { domainVersions, type RecordedStep } from '@browser-blackbox/domain';
-import { generatePlaywrightUiTest } from './index';
+import {
+  generateApiRequestFixture,
+  generatePlaywrightApiTest,
+  generatePlaywrightUiTest,
+} from './index';
 
 describe('generatePlaywrightUiTest', () => {
   it('exports a standard playwright spec from supported active steps', () => {
@@ -128,5 +137,156 @@ describe('generatePlaywrightUiTest', () => {
       },
     ]);
     expect(result.code).toContain('No active supported steps were available for export.');
+  });
+});
+
+describe('generatePlaywrightApiTest', () => {
+  it('exports a Playwright API test with base url extraction and body assertions', () => {
+    const captures: RequestResponseCapture[] = [requestResponseCaptureFixture];
+    const steps: RecordedStep[] = [
+      {
+        schemaVersion: domainVersions.domainSchemaVersion,
+        id: 'step-login-submit',
+        title: 'Submit login',
+        kind: 'action',
+        status: 'active',
+        evidenceState: 'current',
+        createdAt: '2026-06-30T00:00:00.000Z',
+        updatedAt: '2026-06-30T00:00:00.000Z',
+        dependencyStepIds: [],
+        invalidatesEvidenceAfter: true,
+        action: {
+          type: 'click',
+          selector: 'page.getByRole("button", { name: "Sign in" })',
+        },
+      },
+    ];
+
+    const result = generatePlaywrightApiTest({
+      flowTitle: 'Login flow',
+      steps,
+      captures,
+    });
+
+    expect(result.fileName).toBe('generated/api.spec.ts');
+    expect(result.testName).toBe('Login flow API');
+    expect(result.warnings).toEqual([]);
+    expect(result.code).toContain(
+      `const baseURL = process.env.BASE_URL ?? "https://example.test";`,
+    );
+    expect(result.code).toContain(`test.step("Submit login", async () => {`);
+    expect(result.code).toContain(
+      `const response1 = await request.post(\`\${baseURL}/api/login\`, {`,
+    );
+    expect(result.code).toContain(`expect(response1.status()).toBe(200);`);
+    expect(result.code).toContain(`expect(request_auth_loginJson).toMatchObject({`);
+  });
+
+  it('omits websocket captures and warns when bodies cannot be inlined', () => {
+    const captures: RequestResponseCapture[] = [
+      {
+        ...requestResponseCaptureFixture,
+        id: 'request-download',
+        request: {
+          ...requestResponseCaptureFixture.request,
+          url: 'https://example.test/api/download',
+          method: 'GET',
+          body: {
+            state: 'unavailable',
+            reason: 'Body not captured for GET request',
+          },
+        },
+        response: {
+          status: 200,
+          headers: {
+            'content-type': 'application/octet-stream',
+          },
+          body: {
+            state: 'truncated',
+            contentType: 'application/octet-stream',
+            reason: 'Binary payload omitted',
+          },
+        },
+      },
+      {
+        ...requestResponseCaptureFixture,
+        id: 'ws-1',
+        protocol: 'websocket',
+      },
+    ];
+
+    const result = generatePlaywrightApiTest({ captures });
+
+    expect(result.code).toContain(`await request.get(\`\${baseURL}/api/download\`, {`);
+    expect(result.warnings).toEqual([
+      {
+        kind: 'request-body-not-inlineable',
+        captureId: 'request-download',
+        url: 'https://example.test/api/download',
+        detail: 'Request body is unavailable and cannot be emitted inline: Body not captured for GET request',
+      },
+      {
+        kind: 'response-body-not-asserted',
+        captureId: 'request-download',
+        url: 'https://example.test/api/download',
+        detail: 'Response body is truncated and was not converted into a body assertion: Binary payload omitted',
+      },
+      {
+        kind: 'non-http-capture-omitted',
+        captureId: 'ws-1',
+        detail: 'Capture protocol websocket is not exported in the API request artifacts.',
+      },
+    ]);
+  });
+});
+
+describe('generateApiRequestFixture', () => {
+  it('exports grouped request fixtures with environment metadata', () => {
+    const result = generateApiRequestFixture({
+      flowTitle: 'Login flow',
+      steps: [
+        {
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: 'step-login-submit',
+          title: 'Submit login',
+          kind: 'action',
+          status: 'active',
+          evidenceState: 'current',
+          createdAt: '2026-06-30T00:00:00.000Z',
+          updatedAt: '2026-06-30T00:00:00.000Z',
+          dependencyStepIds: [],
+          invalidatesEvidenceAfter: true,
+          action: {
+            type: 'click',
+            selector: 'page.getByRole("button", { name: "Sign in" })',
+          },
+        },
+      ],
+      captures: [requestResponseCaptureFixture],
+    });
+
+    expect(result.fileName).toBe('fixtures/api-requests.json');
+    expect(result.warnings).toEqual([]);
+    const parsed = JSON.parse(result.code) as {
+      environmentVariables: Array<{ name: string; defaultValue: string }>;
+      groups: Array<{ title: string; requests: Array<{ urlTemplate: string; response?: { status: number } }> }>;
+      secretPlaceholders: Array<{ token: string }>;
+    };
+    expect(parsed.environmentVariables).toEqual([
+      {
+        name: 'BASE_URL',
+        defaultValue: 'https://example.test',
+        required: false,
+      },
+    ]);
+    expect(parsed.secretPlaceholders).toEqual([
+      {
+        token: '[REDACTED]',
+        meaning: 'Value was redacted before export and should be replaced with a safe secret source.',
+      },
+    ]);
+    expect(parsed.groups[0]?.title).toBe('Submit login');
+    expect(parsed.groups[0]?.requests[0]?.urlTemplate).toBe('/api/login');
+    expect(parsed.groups[0]?.requests[0]?.response?.status).toBe(200);
   });
 });

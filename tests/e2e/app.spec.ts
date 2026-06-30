@@ -452,6 +452,15 @@ test.describe('desktop acceptance', () => {
 
     const exportPanel = window.getByTestId('artifact-export-panel');
     await expect(exportPanel).toContainText('Some captured full bodies still look sensitive');
+    await expect(window.getByTestId('api-export-preview')).toContainText(
+      `const baseURL = process.env.BASE_URL ?? "${fixtureServer.origin}";`,
+    );
+    await expect(window.getByTestId('api-export-preview')).toContainText(
+      'await request.post(`${baseURL}/api/profile`, {',
+    );
+    await expect(window.getByTestId('api-fixture-preview')).toContainText(
+      '"urlTemplate": "/api/profile"',
+    );
 
     await window.getByRole('button', { name: 'Export safe artifact bundle' }).click();
     const exportResult = window.getByTestId('artifact-export-result');

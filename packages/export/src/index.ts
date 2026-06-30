@@ -1,4 +1,4 @@
-import type { Assertion, RecordedStep } from '@browser-blackbox/domain';
+import type { Assertion, CaptureBody, RecordedStep, RequestResponseCapture } from '@browser-blackbox/domain';
 
 export type PlaywrightUiExportWarning =
   | {
@@ -19,6 +19,100 @@ export type PlaywrightUiExportResult = {
   code: string;
   warnings: PlaywrightUiExportWarning[];
 };
+
+export type ApiExportWarning =
+  | {
+      kind: 'non-http-capture-omitted';
+      captureId: string;
+      detail: string;
+    }
+  | {
+      kind: 'request-body-not-inlineable';
+      captureId: string;
+      url: string;
+      detail: string;
+    }
+  | {
+      kind: 'response-body-not-asserted';
+      captureId: string;
+      url: string;
+      detail: string;
+    };
+
+export type PlaywrightApiExportResult = {
+  fileName: string;
+  testName: string;
+  code: string;
+  warnings: ApiExportWarning[];
+};
+
+export type ApiRequestFixtureExportResult = {
+  fileName: string;
+  code: string;
+  warnings: ApiExportWarning[];
+};
+
+type ApiExportInput = {
+  flowTitle?: string;
+  steps?: RecordedStep[];
+  captures: RequestResponseCapture[];
+};
+
+type ApiExportModel = {
+  flowTitle: string;
+  commonOrigin: string | null;
+  warnings: ApiExportWarning[];
+  requests: ApiExportRequest[];
+  groups: ApiExportGroup[];
+};
+
+type ApiExportRequest = {
+  capture: RequestResponseCapture;
+  requestVariableName: string;
+  requestUrl: string;
+  requestInitLines: string[];
+  responseAssertionLines: string[];
+  fixture: {
+    id: string;
+    method: string;
+    url: string;
+    urlTemplate: string;
+    triggeringStepId?: string;
+    request: {
+      headers: Record<string, string>;
+      body: ApiFixtureBody;
+    };
+    response?: {
+      status: number;
+      headers: Record<string, string>;
+      body: ApiFixtureBody;
+    };
+    correlationIds: string[];
+    retryCount: number;
+    blocked: boolean;
+    durationMs?: number;
+  };
+};
+
+type ApiExportGroup = {
+  id: string;
+  title: string;
+  requests: ApiExportRequest[];
+};
+
+type ApiFixtureBody =
+  | {
+      state: 'full' | 'redacted';
+      contentType?: string;
+      text: string;
+      parsedJson?: unknown;
+      redactionRuleIds?: string[];
+    }
+  | {
+      state: 'excluded' | 'unavailable' | 'truncated';
+      contentType?: string;
+      reason: string;
+    };
 
 export function generatePlaywrightUiTest(input: {
   flowTitle?: string;
@@ -69,6 +163,298 @@ export function generatePlaywrightUiTest(input: {
   };
 }
 
+export function generatePlaywrightApiTest(input: ApiExportInput): PlaywrightApiExportResult {
+  const model = buildApiExportModel(input);
+  const fileName = 'generated/api.spec.ts';
+  const testName = `${model.flowTitle} API`;
+  const bodyLines: string[] = [];
+
+  if (model.commonOrigin) {
+    bodyLines.push(`const baseURL = process.env.BASE_URL ?? ${JSON.stringify(model.commonOrigin)};`);
+    bodyLines.push(``);
+  }
+
+  for (const group of model.groups) {
+    bodyLines.push(`test.step(${JSON.stringify(group.title)}, async () => {`);
+    const groupLines: string[] = [];
+
+    for (const request of group.requests) {
+      groupLines.push(
+        `const ${request.requestVariableName} = await request.${request.capture.request.method.toLowerCase()}(${request.requestUrl}, {`,
+        ...indentLines(request.requestInitLines, 2),
+        `});`,
+      );
+
+      if (request.responseAssertionLines.length > 0) {
+        groupLines.push(...request.responseAssertionLines.map((line) => line.replace('$response', request.requestVariableName)));
+      }
+
+      groupLines.push(``);
+    }
+
+    bodyLines.push(...indentLines(trimTrailingBlankLines(groupLines), 1));
+    bodyLines.push(`});`);
+    bodyLines.push(``);
+  }
+
+  const code = [
+    `import { test, expect } from '@playwright/test';`,
+    ``,
+    `test(${JSON.stringify(testName)}, async ({ request }) => {`,
+    ...indentLines(
+      trimTrailingBlankLines(
+        bodyLines.length > 0
+          ? bodyLines
+          : [`// No HTTP captures were available for API export.`],
+      ),
+    ),
+    `});`,
+    ``,
+  ].join('\n');
+
+  return {
+    fileName,
+    testName,
+    code,
+    warnings: model.warnings,
+  };
+}
+
+export function generateApiRequestFixture(input: ApiExportInput): ApiRequestFixtureExportResult {
+  const model = buildApiExportModel(input);
+  const fileName = 'fixtures/api-requests.json';
+  const code = `${JSON.stringify(
+    {
+      schemaVersion: '1.0.0',
+      flowTitle: model.flowTitle,
+      environmentVariables: model.commonOrigin
+        ? [
+            {
+              name: 'BASE_URL',
+              defaultValue: model.commonOrigin,
+              required: false,
+            },
+          ]
+        : [],
+      secretPlaceholders: [
+        {
+          token: '[REDACTED]',
+          meaning: 'Value was redacted before export and should be replaced with a safe secret source.',
+        },
+      ],
+      groups: model.groups.map((group) => ({
+        id: group.id,
+        title: group.title,
+        requests: group.requests.map((request) => request.fixture),
+      })),
+      warnings: model.warnings,
+    },
+    null,
+    2,
+  )}\n`;
+
+  return {
+    fileName,
+    code,
+    warnings: model.warnings,
+  };
+}
+
+function buildApiExportModel(input: ApiExportInput): ApiExportModel {
+  const flowTitle = deriveApiFlowTitle(input.flowTitle, input.captures);
+  const commonOrigin = deriveCommonOrigin(input.captures);
+  const warnings: ApiExportWarning[] = [];
+  const stepTitleMap = new Map(input.steps?.map((step) => [step.id, step.title]) ?? []);
+  const requests: ApiExportRequest[] = [];
+
+  for (const capture of input.captures) {
+    if (capture.protocol !== 'http') {
+      warnings.push({
+        kind: 'non-http-capture-omitted',
+        captureId: capture.id,
+        detail: `Capture protocol ${capture.protocol} is not exported in the API request artifacts.`,
+      });
+      continue;
+    }
+
+    requests.push(buildApiExportRequest(capture, commonOrigin, warnings, requests.length));
+  }
+
+  const groups = new Map<string, ApiExportGroup>();
+
+  for (const request of requests) {
+    const stepId = request.capture.triggeringStepId ?? 'uncorrelated';
+    const title =
+      request.capture.triggeringStepId && stepTitleMap.has(request.capture.triggeringStepId)
+        ? stepTitleMap.get(request.capture.triggeringStepId) ?? request.capture.triggeringStepId
+        : request.capture.triggeringStepId ?? 'Uncorrelated requests';
+    const existing = groups.get(stepId);
+
+    if (existing) {
+      existing.requests.push(request);
+      continue;
+    }
+
+    groups.set(stepId, {
+      id: stepId,
+      title,
+      requests: [request],
+    });
+  }
+
+  return {
+    flowTitle,
+    commonOrigin,
+    warnings,
+    requests,
+    groups: [...groups.values()],
+  };
+}
+
+function buildApiExportRequest(
+  capture: RequestResponseCapture,
+  commonOrigin: string | null,
+  warnings: ApiExportWarning[],
+  index: number,
+): ApiExportRequest {
+  const requestVariableName = `response${index + 1}`;
+  const requestUrl = emitRequestUrl(capture.request.url, commonOrigin);
+  const requestInitLines = buildRequestInitLines(capture, warnings);
+  const responseAssertionLines = buildResponseAssertionLines(capture, warnings);
+
+  return {
+    capture,
+    requestVariableName,
+    requestUrl,
+    requestInitLines,
+    responseAssertionLines,
+    fixture: {
+      id: capture.id,
+      method: capture.request.method,
+      url: capture.request.url,
+      urlTemplate: deriveUrlTemplate(capture.request.url, commonOrigin),
+      triggeringStepId: capture.triggeringStepId,
+      request: {
+        headers: capture.request.headers,
+        body: toFixtureBody(capture.request.body),
+      },
+      response: capture.response
+        ? {
+            status: capture.response.status,
+            headers: capture.response.headers,
+            body: toFixtureBody(capture.response.body),
+          }
+        : undefined,
+      correlationIds: capture.correlationIds,
+      retryCount: capture.retryCount,
+      blocked: capture.blocked,
+      durationMs: capture.durationMs,
+    },
+  };
+}
+
+function buildRequestInitLines(
+  capture: RequestResponseCapture,
+  warnings: ApiExportWarning[],
+): string[] {
+  const lines = [`headers: ${formatObjectLiteral(capture.request.headers)},`];
+  const bodyLine = emitRequestBodyLine(capture, warnings);
+  if (bodyLine) {
+    lines.push(bodyLine);
+  }
+  return lines;
+}
+
+function emitRequestBodyLine(
+  capture: RequestResponseCapture,
+  warnings: ApiExportWarning[],
+): string | null {
+  const body = capture.request.body;
+  if (!isTextCaptureBody(body)) {
+    warnings.push({
+      kind: 'request-body-not-inlineable',
+      captureId: capture.id,
+      url: capture.request.url,
+      detail: `Request body is ${body.state} and cannot be emitted inline: ${body.reason}`,
+    });
+    return null;
+  }
+
+  if (body.contentType?.includes('application/json')) {
+    const parsedJson = safeParseJson(body.text);
+    if (parsedJson !== undefined) {
+      return `data: ${formatValueLiteral(parsedJson)},`;
+    }
+  }
+
+  return `data: ${JSON.stringify(body.text)},`;
+}
+
+function buildResponseAssertionLines(
+  capture: RequestResponseCapture,
+  warnings: ApiExportWarning[],
+): string[] {
+  const response = capture.response;
+  if (!response) {
+    return capture.failure
+      ? [
+          `expect($response.ok()).toBe(false);`,
+          `// Original capture ended with failure ${JSON.stringify(capture.failure.code)}: ${capture.failure.message}`,
+        ]
+      : [];
+  }
+
+  const lines = [`expect($response.status()).toBe(${response.status});`];
+
+  if (!isTextCaptureBody(response.body)) {
+    warnings.push({
+      kind: 'response-body-not-asserted',
+      captureId: capture.id,
+      url: capture.request.url,
+      detail: `Response body is ${response.body.state} and was not converted into a body assertion: ${response.body.reason}`,
+    });
+    return lines;
+  }
+
+  if (response.body.contentType?.includes('application/json')) {
+    const parsedJson = safeParseJson(response.body.text);
+    if (parsedJson !== undefined) {
+      const jsonVariableName = `${capture.id.replace(/[^a-zA-Z0-9]+/g, '_')}Json`;
+      lines.push(`const ${jsonVariableName} = await $response.json();`);
+      lines.push(
+        Array.isArray(parsedJson) || isPlainObject(parsedJson)
+          ? `expect(${jsonVariableName}).toMatchObject(${formatValueLiteral(parsedJson)});`
+          : `expect(${jsonVariableName}).toEqual(${formatValueLiteral(parsedJson)});`,
+      );
+      return lines;
+    }
+  }
+
+  if (response.body.text.length > 0) {
+    lines.push(`await expect($response.text()).resolves.toContain(${JSON.stringify(response.body.text.slice(0, 120))});`);
+  }
+
+  return lines;
+}
+
+function deriveApiFlowTitle(flowTitle: string | undefined, captures: RequestResponseCapture[]): string {
+  if (flowTitle && flowTitle.trim().length > 0) {
+    return flowTitle.trim();
+  }
+
+  const firstHttpCapture = captures.find((capture) => capture.protocol === 'http');
+  if (firstHttpCapture) {
+    try {
+      const url = new URL(firstHttpCapture.request.url);
+      return `${url.hostname} API flow`;
+    } catch {
+      return `${firstHttpCapture.request.method} API flow`;
+    }
+  }
+
+  return 'Recorded API flow';
+}
+
 function deriveTestName(flowTitle: string | undefined, steps: RecordedStep[]): string {
   const firstNavigate = steps.find(
     (step) => step.kind === 'action' && step.action.type === 'navigate',
@@ -89,6 +475,76 @@ function deriveTestName(flowTitle: string | undefined, steps: RecordedStep[]): s
   }
 
   return steps[0]?.title ?? 'Recorded flow';
+}
+
+function deriveCommonOrigin(captures: RequestResponseCapture[]): string | null {
+  const origins = captures
+    .filter((capture) => capture.protocol === 'http')
+    .map((capture) => {
+      try {
+        return new URL(capture.request.url).origin;
+      } catch {
+        return null;
+      }
+    })
+    .filter((origin): origin is string => origin !== null);
+
+  if (origins.length === 0) {
+    return null;
+  }
+
+  return origins.every((origin) => origin === origins[0]) ? origins[0] : null;
+}
+
+function emitRequestUrl(url: string, commonOrigin: string | null): string {
+  const template = deriveUrlTemplate(url, commonOrigin);
+  if (commonOrigin) {
+    return `\`${'${baseURL}'}${template}\``;
+  }
+  return JSON.stringify(template);
+}
+
+function deriveUrlTemplate(url: string, commonOrigin: string | null): string {
+  if (!commonOrigin) {
+    return url;
+  }
+
+  try {
+    const parsed = new URL(url);
+    if (parsed.origin !== commonOrigin) {
+      return url;
+    }
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return url;
+  }
+}
+
+function toFixtureBody(body: CaptureBody): ApiFixtureBody {
+  if (body.state === 'full') {
+    return {
+      state: 'full',
+      contentType: body.contentType,
+      text: body.text,
+      parsedJson: safeParseJson(body.text),
+    };
+  }
+
+  if (body.state === 'redacted') {
+    return {
+      state: 'redacted',
+      contentType: body.contentType,
+      text: body.text,
+      parsedJson: safeParseJson(body.text),
+      redactionRuleIds: body.redactionRuleIds,
+    };
+  }
+
+  return {
+    state: body.state,
+    contentType: body.contentType,
+    reason: body.reason,
+  };
 }
 
 function emitStep(step: RecordedStep): string[] | null {
@@ -188,6 +644,81 @@ function describeUnsupportedStep(step: RecordedStep): string {
   return `Action type ${step.action.type} is not exported in Phase 8 slice 1.`;
 }
 
-function indentLines(lines: string[]): string[] {
-  return lines.map((line) => `  ${line}`);
+function safeParseJson(value: string): unknown | undefined {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function isTextCaptureBody(
+  body: CaptureBody,
+): body is Extract<CaptureBody, { state: 'full' | 'redacted' }> {
+  return body.state === 'full' || body.state === 'redacted';
+}
+
+function formatObjectLiteral(value: Record<string, string>): string {
+  if (Object.keys(value).length === 0) {
+    return '{}';
+  }
+
+  return formatValueLiteral(value);
+}
+
+function formatValueLiteral(value: unknown, depth = 0): string {
+  if (value === null) {
+    return 'null';
+  }
+
+  if (typeof value === 'string') {
+    return JSON.stringify(value);
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return '[]';
+    }
+
+    return `[\n${value
+      .map((entry) => `${'  '.repeat(depth + 1)}${formatValueLiteral(entry, depth + 1)}`)
+      .join(',\n')}\n${'  '.repeat(depth)}]`;
+  }
+
+  if (isPlainObject(value)) {
+    const entries = Object.entries(value);
+    if (entries.length === 0) {
+      return '{}';
+    }
+
+    return `{\n${entries
+      .map(
+        ([key, entryValue]) =>
+          `${'  '.repeat(depth + 1)}${JSON.stringify(key)}: ${formatValueLiteral(entryValue, depth + 1)}`,
+      )
+      .join(',\n')}\n${'  '.repeat(depth)}}`;
+  }
+
+  return JSON.stringify(value);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function trimTrailingBlankLines(lines: string[]): string[] {
+  const trimmed = [...lines];
+  while (trimmed.length > 0 && trimmed[trimmed.length - 1] === '') {
+    trimmed.pop();
+  }
+  return trimmed;
+}
+
+function indentLines(lines: string[], level = 1): string[] {
+  const padding = '  '.repeat(level);
+  return lines.map((line) => `${padding}${line}`);
 }

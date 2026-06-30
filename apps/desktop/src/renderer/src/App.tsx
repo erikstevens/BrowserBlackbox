@@ -6,8 +6,12 @@ import {
   type RedactionRule,
   type RequestResponseCapture,
 } from '@browser-blackbox/domain';
-import { generatePlaywrightUiTest } from '@browser-blackbox/export';
-import type { PlaywrightUiExportWarning } from '@browser-blackbox/export';
+import {
+  generateApiRequestFixture,
+  generatePlaywrightApiTest,
+  generatePlaywrightUiTest,
+} from '@browser-blackbox/export';
+import type { ApiExportWarning, PlaywrightUiExportWarning } from '@browser-blackbox/export';
 import type {
   ArtifactBundleExportResult,
   ArtifactExportMode,
@@ -103,6 +107,22 @@ export function App() {
         ? `${recordingSession.present.steps[0].title} flow`
         : undefined,
     steps: recordingSession.present.steps,
+  });
+  const generatedApiTest = generatePlaywrightApiTest({
+    flowTitle:
+      recordingSession.present.steps[0]?.title
+        ? `${recordingSession.present.steps[0].title} flow`
+        : undefined,
+    steps: recordingSession.present.steps,
+    captures,
+  });
+  const generatedApiFixture = generateApiRequestFixture({
+    flowTitle:
+      recordingSession.present.steps[0]?.title
+        ? `${recordingSession.present.steps[0].title} flow`
+        : undefined,
+    steps: recordingSession.present.steps,
+    captures,
   });
   const selectedStepIndex = selectedRecordedStep
     ? recordingSession.present.steps.findIndex((step) => step.id === selectedRecordedStep.id)
@@ -806,6 +826,49 @@ export function App() {
                 ) : null}
                 <pre className="network-body-text" data-testid="ui-export-preview">
                   {generatedUiTest.code}
+                </pre>
+              </div>
+
+              <div className="network-detail-card">
+                <p className="section-label">API export preview</p>
+                <p className="inspection-reason">
+                  The API export core emits a Playwright request-context spec plus a grouped
+                  JSON fixture built from the canonical redacted capture model.
+                </p>
+                <div className="runtime-status">
+                  <p className="status-row">
+                    <span className="status-label">API test file</span>
+                    <span className="status-value">{generatedApiTest.fileName}</span>
+                  </p>
+                  <p className="status-row">
+                    <span className="status-label">Fixture file</span>
+                    <span className="status-value">{generatedApiFixture.fileName}</span>
+                  </p>
+                </div>
+                {generatedApiTest.warnings.length > 0 ? (
+                  <div className="checkpoint-list" data-testid="api-export-warnings">
+                    {generatedApiTest.warnings.map((warning: ApiExportWarning) => (
+                      <div
+                        className="step-review-card"
+                        key={`${warning.kind}-${warning.captureId}`}
+                      >
+                        <div className="step-review-header">
+                          <span className="step-index">{warning.kind}</span>
+                          <span className="status-value">{warning.captureId}</span>
+                        </div>
+                        <p className="step-summary">
+                          {'url' in warning ? warning.url : 'Protocol-specific capture omitted'}
+                        </p>
+                        <p className="inspection-reason">{warning.detail}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                <pre className="network-body-text" data-testid="api-export-preview">
+                  {generatedApiTest.code}
+                </pre>
+                <pre className="network-body-text" data-testid="api-fixture-preview">
+                  {generatedApiFixture.code}
                 </pre>
               </div>
 
