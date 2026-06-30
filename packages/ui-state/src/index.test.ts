@@ -193,6 +193,20 @@ describe('workspace recording review state', () => {
         scope: 'both',
       }),
     );
+    state.addSimulationRule({
+      schemaVersion: '1.0.0',
+      id: 'sim-login-block',
+      enabled: true,
+      title: 'Block login API',
+      appliesTo: 'global',
+      match: {
+        routePattern: '**/api/login',
+        method: 'POST',
+      },
+      action: {
+        kind: 'route-block',
+      },
+    });
     state.pushRuntimeUpdate({
       state: {
         phase: 'running',
@@ -249,6 +263,12 @@ describe('workspace recording review state', () => {
       scope: 'both',
       mode: 'user-defined',
     });
+    expect(hydrated.simulationRules).toEqual([
+      expect.objectContaining({
+        id: 'sim-login-block',
+        title: 'Block login API',
+      }),
+    ]);
     expect(hydrated.captures).toHaveLength(0);
     expect(hydrated.timeline).toHaveLength(1);
   });
@@ -267,6 +287,50 @@ describe('workspace recording review state', () => {
 
     state.removeRedactionRule(rule.id);
     expect(useWorkspaceStore.getState().redactionRules).toEqual([]);
+  });
+
+  it('adds, replaces, and removes simulation rules in workspace state', () => {
+    const state = useWorkspaceStore.getState();
+
+    state.addSimulationRule({
+      schemaVersion: '1.0.0',
+      id: 'sim-home-block',
+      enabled: true,
+      title: 'Block home',
+      appliesTo: 'global',
+      match: {
+        routePattern: '**/home',
+      },
+      action: {
+        kind: 'route-block',
+      },
+    });
+
+    expect(useWorkspaceStore.getState().simulationRules).toHaveLength(1);
+
+    state.replaceSimulationRule('sim-home-block', {
+      schemaVersion: '1.0.0',
+      id: 'sim-home-block',
+      enabled: false,
+      title: 'Slow home',
+      appliesTo: 'scenario',
+      match: {
+        routePattern: '**/home',
+      },
+      action: {
+        kind: 'fixed-latency',
+        valueMsOrKbps: 400,
+      },
+    });
+
+    expect(useWorkspaceStore.getState().simulationRules[0]).toMatchObject({
+      enabled: false,
+      title: 'Slow home',
+      appliesTo: 'scenario',
+    });
+
+    state.removeSimulationRule('sim-home-block');
+    expect(useWorkspaceStore.getState().simulationRules).toEqual([]);
   });
 
   it('derives request captures, timeline events, and diagnosis from runtime events', () => {

@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import {
+  domainVersions,
   productSummary,
   type CaptureBody,
   type RecordedStep,
   type RedactionRule,
   type RequestResponseCapture,
+  type SimulationRule,
 } from '@browser-blackbox/domain';
 import {
   generateApiCollection,
@@ -33,6 +35,7 @@ export function App() {
   const currentInspection = useWorkspaceStore((state) => state.currentInspection);
   const captures = useWorkspaceStore((state) => state.captures);
   const redactionRules = useWorkspaceStore((state) => state.redactionRules);
+  const simulationRules = useWorkspaceStore((state) => state.simulationRules);
   const timeline = useWorkspaceStore((state) => state.timeline);
   const diagnosis = useWorkspaceStore((state) => state.diagnosis);
   const recordingSession = useWorkspaceStore((state) => state.recordingSession);
@@ -58,6 +61,9 @@ export function App() {
   const beginRuntimeCapture = useWorkspaceStore((state) => state.beginRuntimeCapture);
   const addRedactionRule = useWorkspaceStore((state) => state.addRedactionRule);
   const removeRedactionRule = useWorkspaceStore((state) => state.removeRedactionRule);
+  const addSimulationRule = useWorkspaceStore((state) => state.addSimulationRule);
+  const replaceSimulationRule = useWorkspaceStore((state) => state.replaceSimulationRule);
+  const removeSimulationRule = useWorkspaceStore((state) => state.removeSimulationRule);
   const hydrateWorkingCopySnapshot = useWorkspaceStore(
     (state) => state.hydrateWorkingCopySnapshot,
   );
@@ -84,6 +90,21 @@ export function App() {
   const [newRuleKind, setNewRuleKind] = useState<RedactionRule['kind']>('json-path');
   const [newRuleScope, setNewRuleScope] = useState<RedactionRule['scope']>('both');
   const [newRuleTarget, setNewRuleTarget] = useState('');
+  const [selectedSimulationRuleId, setSelectedSimulationRuleId] = useState<string | null>(null);
+  const [simulationTitle, setSimulationTitle] = useState('Block route during replay');
+  const [simulationAppliesTo, setSimulationAppliesTo] =
+    useState<SimulationRule['appliesTo']>('global');
+  const [simulationRoutePattern, setSimulationRoutePattern] = useState('**/*');
+  const [simulationDomain, setSimulationDomain] = useState('');
+  const [simulationMethod, setSimulationMethod] = useState('GET');
+  const [simulationFlowContext, setSimulationFlowContext] = useState('');
+  const [simulationActionKind, setSimulationActionKind] = useState<
+    SimulationRule['action']['kind']
+  >('route-block');
+  const [simulationLatencyValue, setSimulationLatencyValue] = useState('250');
+  const [simulationStatusValue, setSimulationStatusValue] = useState('503');
+  const [simulationFixturePath, setSimulationFixturePath] = useState('');
+  const [simulationEnabled, setSimulationEnabled] = useState(true);
   const [acknowledgeVisibleBodyExport, setAcknowledgeVisibleBodyExport] = useState(false);
   const [pendingExportMode, setPendingExportMode] = useState<ArtifactExportMode | null>(null);
   const [lastArtifactExport, setLastArtifactExport] =
@@ -136,6 +157,10 @@ export function App() {
   const selectedStepIndex = selectedRecordedStep
     ? recordingSession.present.steps.findIndex((step) => step.id === selectedRecordedStep.id)
     : -1;
+  const selectedSimulationRule =
+    (selectedSimulationRuleId
+      ? simulationRules.find((rule) => rule.id === selectedSimulationRuleId) ?? null
+      : null);
 
   useEffect(() => {
     void window.desktopShell
@@ -276,6 +301,7 @@ export function App() {
         checkpoints: useWorkspaceStore.getState().recordingSession.present.checkpoints,
         plan: replayPlan,
         redactionRules: useWorkspaceStore.getState().redactionRules,
+        simulationRules: useWorkspaceStore.getState().simulationRules,
       });
       setBrowserRuntime(result.state);
       completeReplayExecution(result.completedStepIds, result.capturedCheckpoints);
@@ -290,6 +316,85 @@ export function App() {
     } finally {
       setPendingAction(null);
     }
+  }
+
+  function resetSimulationRuleDraft(): void {
+    setSelectedSimulationRuleId(null);
+    setSimulationTitle('Block route during replay');
+    setSimulationAppliesTo('global');
+    setSimulationRoutePattern('**/*');
+    setSimulationDomain('');
+    setSimulationMethod('GET');
+    setSimulationFlowContext('');
+    setSimulationActionKind('route-block');
+    setSimulationLatencyValue('250');
+    setSimulationStatusValue('503');
+    setSimulationFixturePath('');
+    setSimulationEnabled(true);
+  }
+
+  function loadSimulationRuleDraft(rule: SimulationRule): void {
+    setSelectedSimulationRuleId(rule.id);
+    setSimulationTitle(rule.title);
+    setSimulationAppliesTo(rule.appliesTo);
+    setSimulationRoutePattern(rule.match.routePattern ?? '');
+    setSimulationDomain(rule.match.domain ?? '');
+    setSimulationMethod(rule.match.method ?? 'GET');
+    setSimulationFlowContext(rule.match.flowContext ?? '');
+    setSimulationEnabled(rule.enabled);
+    setSimulationActionKind(rule.action.kind);
+    if ('valueMsOrKbps' in rule.action) {
+      setSimulationLatencyValue(String(rule.action.valueMsOrKbps));
+      setSimulationStatusValue('503');
+      setSimulationFixturePath('');
+      return;
+    }
+    if (rule.action.kind === 'forced-status') {
+      setSimulationStatusValue(String(rule.action.status));
+      setSimulationLatencyValue('250');
+      setSimulationFixturePath('');
+      return;
+    }
+    if (rule.action.kind === 'delayed-response') {
+      setSimulationLatencyValue(String(rule.action.delayMs));
+      setSimulationStatusValue(String(rule.action.status ?? 200));
+      setSimulationFixturePath(rule.action.fixturePath ?? '');
+      return;
+    }
+    if (rule.action.kind === 'response-fixture') {
+      setSimulationStatusValue(String(rule.action.status ?? 200));
+      setSimulationFixturePath(rule.action.fixturePath);
+      setSimulationLatencyValue('250');
+      return;
+    }
+    setSimulationLatencyValue('250');
+    setSimulationStatusValue('503');
+    setSimulationFixturePath('');
+  }
+
+  function saveSimulationRule(): void {
+    const rule = buildSimulationRuleDraft({
+      actionKind: simulationActionKind,
+      appliesTo: simulationAppliesTo,
+      domain: simulationDomain,
+      enabled: simulationEnabled,
+      fixturePath: simulationFixturePath,
+      flowContext: simulationFlowContext,
+      id: selectedSimulationRuleId ?? `sim-user-${Date.now()}`,
+      latencyValue: simulationLatencyValue,
+      method: simulationMethod,
+      routePattern: simulationRoutePattern,
+      statusValue: simulationStatusValue,
+      title: simulationTitle,
+    });
+
+    if (selectedSimulationRuleId) {
+      replaceSimulationRule(selectedSimulationRuleId, rule);
+    } else {
+      addSimulationRule(rule);
+    }
+
+    loadSimulationRuleDraft(rule);
   }
 
   async function toggleInspectionMode(): Promise<void> {
@@ -1356,6 +1461,230 @@ export function App() {
           <article className="panel full-width-panel">
             <div className="panel-header">
               <div>
+                <p className="section-label">Simulation rules</p>
+                <p className="panel-copy">
+                  Attach deterministic network rules to the current flow so the next
+                  replay can run with route blocking, latency, offline-style failures,
+                  forced statuses, or fixture-backed responses.
+                </p>
+              </div>
+              <div className="recording-toolbar">
+                <button className="button button-secondary" onClick={() => resetSimulationRuleDraft()}>
+                  New rule
+                </button>
+                <button className="button button-primary" onClick={() => saveSimulationRule()}>
+                  {selectedSimulationRule ? 'Save rule' : 'Add rule'}
+                </button>
+              </div>
+            </div>
+
+            <div className="recording-review-grid" data-testid="simulation-rules-panel">
+              <div className="step-review-list">
+                {simulationRules.length === 0 ? (
+                  <p className="empty-state">
+                    No simulation rules are attached yet. Replays currently run against
+                    live network behavior only.
+                  </p>
+                ) : (
+                  simulationRules.map((rule) => (
+                    <button
+                      key={rule.id}
+                      className={`step-review-card${
+                        rule.id === selectedSimulationRuleId ? ' step-review-card-selected' : ''
+                      }`}
+                      onClick={() => loadSimulationRuleDraft(rule)}
+                      type="button"
+                    >
+                      <div className="step-review-header">
+                        <span className="step-index">{rule.action.kind}</span>
+                        <span className={`status-pill status-${rule.enabled ? 'running' : 'idle'}`}>
+                          {rule.enabled ? 'enabled' : 'disabled'}
+                        </span>
+                      </div>
+                      <p className="step-title">{rule.title}</p>
+                      <p className="step-summary">
+                        {describeSimulationRule(rule)}
+                      </p>
+                      <div className="step-review-tags">
+                        <span className="review-tag">{rule.appliesTo}</span>
+                        <span className="review-tag">{rule.id}</span>
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+
+              <div className="step-editor-shell">
+                <div className="editor-form-grid">
+                  <label className="field-label" htmlFor="simulation-title">
+                    Rule title
+                  </label>
+                  <input
+                    id="simulation-title"
+                    className="url-input"
+                    value={simulationTitle}
+                    onChange={(event) => setSimulationTitle(event.target.value)}
+                  />
+
+                  <label className="field-label" htmlFor="simulation-applies-to">
+                    Applies to
+                  </label>
+                  <select
+                    id="simulation-applies-to"
+                    className="select-input"
+                    value={simulationAppliesTo}
+                    onChange={(event) =>
+                      setSimulationAppliesTo(event.target.value as SimulationRule['appliesTo'])
+                    }
+                  >
+                    <option value="global">global</option>
+                    <option value="scenario">scenario</option>
+                  </select>
+
+                  <label className="field-label" htmlFor="simulation-route-pattern">
+                    Route pattern
+                  </label>
+                  <input
+                    id="simulation-route-pattern"
+                    className="url-input"
+                    value={simulationRoutePattern}
+                    onChange={(event) => setSimulationRoutePattern(event.target.value)}
+                  />
+
+                  <label className="field-label" htmlFor="simulation-domain">
+                    Domain
+                  </label>
+                  <input
+                    id="simulation-domain"
+                    className="url-input"
+                    value={simulationDomain}
+                    onChange={(event) => setSimulationDomain(event.target.value)}
+                  />
+
+                  <label className="field-label" htmlFor="simulation-method">
+                    Method
+                  </label>
+                  <input
+                    id="simulation-method"
+                    className="url-input"
+                    value={simulationMethod}
+                    onChange={(event) => setSimulationMethod(event.target.value.toUpperCase())}
+                  />
+
+                  <label className="field-label" htmlFor="simulation-flow-context">
+                    Flow context
+                  </label>
+                  <input
+                    id="simulation-flow-context"
+                    className="url-input"
+                    value={simulationFlowContext}
+                    onChange={(event) => setSimulationFlowContext(event.target.value)}
+                  />
+
+                  <label className="field-label" htmlFor="simulation-action-kind">
+                    Action kind
+                  </label>
+                  <select
+                    id="simulation-action-kind"
+                    className="select-input"
+                    value={simulationActionKind}
+                    onChange={(event) =>
+                      setSimulationActionKind(
+                        event.target.value as SimulationRule['action']['kind'],
+                      )
+                    }
+                  >
+                    <option value="route-block">route-block</option>
+                    <option value="fixed-latency">fixed-latency</option>
+                    <option value="latency-jitter">latency-jitter</option>
+                    <option value="offline">offline</option>
+                    <option value="forced-status">forced-status</option>
+                    <option value="delayed-response">delayed-response</option>
+                    <option value="response-fixture">response-fixture</option>
+                  </select>
+
+                  {simulationActionKind === 'fixed-latency' ||
+                  simulationActionKind === 'latency-jitter' ||
+                  simulationActionKind === 'delayed-response' ? (
+                    <>
+                      <label className="field-label" htmlFor="simulation-latency-value">
+                        Delay or jitter (ms)
+                      </label>
+                      <input
+                        id="simulation-latency-value"
+                        className="url-input"
+                        value={simulationLatencyValue}
+                        onChange={(event) => setSimulationLatencyValue(event.target.value)}
+                      />
+                    </>
+                  ) : null}
+
+                  {simulationActionKind === 'forced-status' ||
+                  simulationActionKind === 'delayed-response' ||
+                  simulationActionKind === 'response-fixture' ? (
+                    <>
+                      <label className="field-label" htmlFor="simulation-status-value">
+                        HTTP status
+                      </label>
+                      <input
+                        id="simulation-status-value"
+                        className="url-input"
+                        value={simulationStatusValue}
+                        onChange={(event) => setSimulationStatusValue(event.target.value)}
+                      />
+                    </>
+                  ) : null}
+
+                  {simulationActionKind === 'delayed-response' ||
+                  simulationActionKind === 'response-fixture' ? (
+                    <>
+                      <label className="field-label" htmlFor="simulation-fixture-path">
+                        Fixture path
+                      </label>
+                      <input
+                        id="simulation-fixture-path"
+                        className="url-input"
+                        value={simulationFixturePath}
+                        onChange={(event) => setSimulationFixturePath(event.target.value)}
+                      />
+                    </>
+                  ) : null}
+
+                  <label className="field-label" htmlFor="simulation-enabled">
+                    Enabled
+                  </label>
+                  <label className="export-warning-toggle" htmlFor="simulation-enabled">
+                    <input
+                      id="simulation-enabled"
+                      checked={simulationEnabled}
+                      onChange={(event) => setSimulationEnabled(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>Apply this rule during replay.</span>
+                  </label>
+                </div>
+
+                {selectedSimulationRule ? (
+                  <div className="button-row">
+                    <button
+                      className="button button-danger"
+                      onClick={() => {
+                        removeSimulationRule(selectedSimulationRule.id);
+                        resetSimulationRuleDraft();
+                      }}
+                      type="button"
+                    >
+                      Remove rule
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </article>
+
+          <article className="panel full-width-panel">
+            <div className="panel-header">
+              <div>
                 <p className="section-label">Replay recovery</p>
                 <p className="panel-copy">
                   Preview the recovery path for the current working copy before
@@ -1719,6 +2048,109 @@ function renderTimingRow(label: string, value: number | undefined) {
       <span className="status-value">{typeof value === 'number' ? `${value} ms` : 'n/a'}</span>
     </p>
   );
+}
+
+function buildSimulationRuleDraft(input: {
+  actionKind: SimulationRule['action']['kind'];
+  appliesTo: SimulationRule['appliesTo'];
+  domain: string;
+  enabled: boolean;
+  fixturePath: string;
+  flowContext: string;
+  id: string;
+  latencyValue: string;
+  method: string;
+  routePattern: string;
+  statusValue: string;
+  title: string;
+}): SimulationRule {
+  const match = {
+    ...(input.routePattern.trim().length > 0 ? { routePattern: input.routePattern.trim() } : {}),
+    ...(input.domain.trim().length > 0 ? { domain: input.domain.trim() } : {}),
+    ...(input.method.trim().length > 0 ? { method: input.method.trim().toUpperCase() } : {}),
+    ...(input.flowContext.trim().length > 0 ? { flowContext: input.flowContext.trim() } : {}),
+  };
+  const base = {
+    schemaVersion: domainVersions.domainSchemaVersion,
+    id: input.id,
+    enabled: input.enabled,
+    title: input.title.trim().length > 0 ? input.title.trim() : 'Untitled simulation rule',
+    appliesTo: input.appliesTo,
+    match,
+  };
+
+  switch (input.actionKind) {
+    case 'fixed-latency':
+    case 'latency-jitter':
+      return {
+        ...base,
+        action: {
+          kind: input.actionKind,
+          valueMsOrKbps: Number.parseInt(input.latencyValue, 10) || 0,
+        },
+      };
+    case 'offline':
+      return {
+        ...base,
+        action: {
+          kind: 'offline',
+        },
+      };
+    case 'route-block':
+      return {
+        ...base,
+        action: {
+          kind: 'route-block',
+        },
+      };
+    case 'forced-status':
+      return {
+        ...base,
+        action: {
+          kind: 'forced-status',
+          status: Number.parseInt(input.statusValue, 10) || 503,
+        },
+      };
+    case 'delayed-response':
+      return {
+        ...base,
+        action: {
+          kind: 'delayed-response',
+          delayMs: Number.parseInt(input.latencyValue, 10) || 0,
+          status: Number.parseInt(input.statusValue, 10) || 200,
+          ...(input.fixturePath.trim().length > 0
+            ? { fixturePath: input.fixturePath.trim() }
+            : {}),
+        },
+      };
+    case 'response-fixture':
+      return {
+        ...base,
+        action: {
+          kind: 'response-fixture',
+          fixturePath: input.fixturePath.trim(),
+          status: Number.parseInt(input.statusValue, 10) || 200,
+        },
+      };
+    default:
+      return {
+        ...base,
+        action: {
+          kind: 'route-block',
+        },
+      };
+  }
+}
+
+function describeSimulationRule(rule: SimulationRule): string {
+  const targets = [
+    rule.match.routePattern ? `route ${rule.match.routePattern}` : null,
+    rule.match.domain ? `domain ${rule.match.domain}` : null,
+    rule.match.method ? `method ${rule.match.method}` : null,
+    rule.match.flowContext ? `flow ${rule.match.flowContext}` : null,
+  ].filter((value): value is string => value !== null);
+
+  return `${rule.action.kind} on ${targets.join(', ') || 'all requests during replay'}`;
 }
 
 function RequestBodySection(props: {

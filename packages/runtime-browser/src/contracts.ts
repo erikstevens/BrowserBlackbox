@@ -3,6 +3,7 @@ import type {
   Checkpoint,
   RecordedStep,
   RedactionRule,
+  SimulationRule,
 } from '@browser-blackbox/domain';
 
 export type BrowserRuntimePhase =
@@ -51,6 +52,7 @@ export type BrowserReplayRequest = {
   checkpoints: Checkpoint[];
   plan: BrowserReplayPlan;
   redactionRules?: RedactionRule[];
+  simulationRules?: SimulationRule[];
 };
 
 export type BrowserReplayCommandResult = BrowserRuntimeCommandResult & {

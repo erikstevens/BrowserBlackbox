@@ -17,6 +17,7 @@ import {
   type RecordedStep,
   type RedactionRule,
   type RequestResponseCapture,
+  type SimulationRule,
   type TimelineEvent,
 } from '@browser-blackbox/domain';
 import type { StoredRunSnapshot } from '@browser-blackbox/persistence/src/contracts';
@@ -66,6 +67,7 @@ type WorkspaceState = {
   currentInspection: InspectionMetadata | null;
   captures: RequestResponseCapture[];
   redactionRules: RedactionRule[];
+  simulationRules: SimulationRule[];
   timeline: TimelineEvent[];
   diagnosis: DiagnosisResult | null;
   recordingSession: RecordingSession;
@@ -86,6 +88,9 @@ type WorkspaceState = {
   beginRuntimeCapture: (targetUrl: string, sessionId: string | null) => void;
   addRedactionRule: (rule: RedactionRule) => void;
   removeRedactionRule: (ruleId: string) => void;
+  addSimulationRule: (rule: SimulationRule) => void;
+  replaceSimulationRule: (ruleId: string, rule: SimulationRule) => void;
+  removeSimulationRule: (ruleId: string) => void;
   hydrateWorkingCopySnapshot: (snapshot: StoredRunSnapshot) => void;
   exportWorkingCopySnapshot: () => StoredRunSnapshot;
   previewReplayFromStart: () => void;
@@ -126,6 +131,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
     currentInspection: null,
     captures: [],
     redactionRules: [],
+    simulationRules: [],
     timeline: [],
     diagnosis: null,
     recordingSession: createWorkspaceRecordingSession(),
@@ -280,6 +286,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
           workingCopy: metadata,
           captures: [],
           currentInspection: null,
+          simulationRules: [],
           timeline: [],
           diagnosis: null,
           recordingSession: replaceRecordingSession({
@@ -296,6 +303,20 @@ export function createInitialWorkspaceState(): WorkspaceState {
       useWorkspaceStore.setState((state) => ({
         redactionRules: state.redactionRules.filter((rule) => rule.id !== ruleId),
       })),
+    addSimulationRule: (rule) =>
+      useWorkspaceStore.setState((state) => ({
+        simulationRules: deduplicateSimulationRules([...state.simulationRules, rule]),
+      })),
+    replaceSimulationRule: (ruleId, rule) =>
+      useWorkspaceStore.setState((state) => ({
+        simulationRules: deduplicateSimulationRules(
+          state.simulationRules.map((entry) => (entry.id === ruleId ? rule : entry)),
+        ),
+      })),
+    removeSimulationRule: (ruleId) =>
+      useWorkspaceStore.setState((state) => ({
+        simulationRules: state.simulationRules.filter((rule) => rule.id !== ruleId),
+      })),
     hydrateWorkingCopySnapshot: (snapshot) =>
       useWorkspaceStore.setState((state) => {
         const hydrated = hydrateWorkspaceFromStoredRunSnapshot(snapshot);
@@ -306,6 +327,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
           workingCopy: hydrated.metadata,
           captures: hydrated.captures,
           redactionRules: hydrated.redactionRules,
+          simulationRules: hydrated.simulationRules,
           timeline: hydrated.timeline,
           diagnosis: hydrated.diagnosis,
           replayPlan: null,
@@ -326,6 +348,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
         workingCopy: useWorkspaceStore.getState().workingCopy,
         captures: useWorkspaceStore.getState().captures,
         redactionRules: useWorkspaceStore.getState().redactionRules,
+        simulationRules: useWorkspaceStore.getState().simulationRules,
         timeline: useWorkspaceStore.getState().timeline,
         diagnosis: useWorkspaceStore.getState().diagnosis,
       }),
@@ -418,6 +441,19 @@ export function createInitialWorkspaceState(): WorkspaceState {
 }
 
 function deduplicateRedactionRules(rules: RedactionRule[]): RedactionRule[] {
+  const seen = new Set<string>();
+
+  return rules.filter((rule) => {
+    if (seen.has(rule.id)) {
+      return false;
+    }
+
+    seen.add(rule.id);
+    return true;
+  });
+}
+
+function deduplicateSimulationRules(rules: SimulationRule[]): SimulationRule[] {
   const seen = new Set<string>();
 
   return rules.filter((rule) => {
@@ -941,6 +977,25 @@ function buildEvidenceFromRuntimeEvents(
           timestamp: event.timestamp,
           kind: 'navigation',
           stepId: latestCapturedStepId,
+          summary: event.message,
+        }),
+      );
+      continue;
+    }
+
+    if (event.code === 'replay.simulation_rule.applied') {
+      const ruleId = typeof event.data?.ruleId === 'string' ? event.data.ruleId : null;
+      if (!ruleId) {
+        continue;
+      }
+
+      timeline.push(
+        parseTimelineEvent({
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: `timeline-${event.id}`,
+          timestamp: event.timestamp,
+          kind: 'simulation-rule',
+          ruleId,
           summary: event.message,
         }),
       );

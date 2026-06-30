@@ -6,6 +6,7 @@ import {
   type RecordedStep,
   type RedactionRule,
   type RequestResponseCapture,
+  type SimulationRule,
   type TimelineEvent,
 } from '@browser-blackbox/domain';
 import type { StoredRunSnapshot } from '@browser-blackbox/persistence/src/contracts';
@@ -28,6 +29,7 @@ export type WorkspacePersistenceState = {
   workingCopy: WorkspaceWorkingCopyMetadata;
   captures: RequestResponseCapture[];
   redactionRules: RedactionRule[];
+  simulationRules: SimulationRule[];
   timeline: TimelineEvent[];
   diagnosis: DiagnosisResult | null;
 };
@@ -88,7 +90,7 @@ export function createStoredRunSnapshotFromWorkspace(
     steps: state.recordingSession.present.steps,
     captures: state.captures,
     redactionRules: state.redactionRules,
-    simulationRules: [],
+    simulationRules: state.simulationRules,
     timeline: state.timeline,
     checkpoints: state.recordingSession.present.checkpoints,
     diagnosis: state.diagnosis,
@@ -101,6 +103,7 @@ export function hydrateWorkspaceFromStoredRunSnapshot(snapshot: StoredRunSnapsho
   steps: RecordedStep[];
   captures: RequestResponseCapture[];
   redactionRules: RedactionRule[];
+  simulationRules: SimulationRule[];
   timeline: TimelineEvent[];
   checkpoints: Checkpoint[];
   diagnosis: DiagnosisResult | null;
@@ -118,6 +121,7 @@ export function hydrateWorkspaceFromStoredRunSnapshot(snapshot: StoredRunSnapsho
     steps: snapshot.steps,
     captures: snapshot.captures,
     redactionRules: snapshot.redactionRules,
+    simulationRules: snapshot.simulationRules,
     timeline: snapshot.timeline,
     checkpoints: snapshot.checkpoints,
     diagnosis: snapshot.diagnosis,

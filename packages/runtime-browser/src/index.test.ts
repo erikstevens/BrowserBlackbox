@@ -28,6 +28,17 @@ function createConnectorStub() {
   let waitForEventHandler:
     | ((event: 'dialog' | 'download' | 'popup') => Promise<unknown>)
     | null = null;
+  const routeHandlers: Array<(route: {
+    request: () => { url: () => string; method: () => string; headers: () => Record<string, string> };
+    continue: () => Promise<void>;
+    abort: (errorCode?: string) => Promise<void>;
+    fulfill: (options: {
+      status?: number;
+      contentType?: string;
+      body?: string;
+      headers?: Record<string, string>;
+    }) => Promise<void>;
+  }) => Promise<void>> = [];
   let cdpEventListener:
     | ((data: { method: string; params?: Record<string, unknown> }) => void)
     | null = null;
@@ -69,6 +80,34 @@ function createConnectorStub() {
   const page = {
     context: () => context,
     goto: async (targetUrl: string) => {
+      let abortedWith: string | null = null;
+      let fulfilledStatus: number | null = null;
+      for (const handler of routeHandlers) {
+        await handler({
+          request: () => ({
+            url: () => targetUrl,
+            method: () => 'GET',
+            headers: () => ({}),
+          }),
+          continue: async () => {
+            actionLog.push(`continue:${targetUrl}`);
+          },
+          abort: async (errorCode?: string) => {
+            abortedWith = errorCode ?? 'aborted';
+            actionLog.push(`abort:${targetUrl}:${abortedWith}`);
+          },
+          fulfill: async (options) => {
+            fulfilledStatus = options.status ?? 200;
+            actionLog.push(`fulfill:${targetUrl}:${fulfilledStatus}`);
+          },
+        });
+        if (abortedWith || fulfilledStatus !== null) {
+          break;
+        }
+      }
+      if (abortedWith) {
+        throw new Error(`route aborted with ${abortedWith}`);
+      }
       pageUrl = targetUrl;
       currentOrigin = new URL(targetUrl).origin;
       navigatedUrls.push(targetUrl);
@@ -163,6 +202,43 @@ function createConnectorStub() {
     clearCookies: async () => {
       restoredCookies.splice(0, restoredCookies.length);
       actionLog.push('clear-cookies');
+    },
+    route: async (
+      _url: string | RegExp,
+      handler: (route: {
+        request: () => { url: () => string; method: () => string; headers: () => Record<string, string> };
+        continue: () => Promise<void>;
+        abort: (errorCode?: string) => Promise<void>;
+        fulfill: (options: {
+          status?: number;
+          contentType?: string;
+          body?: string;
+          headers?: Record<string, string>;
+        }) => Promise<void>;
+      }) => Promise<void>,
+    ) => {
+      routeHandlers.push(handler);
+      actionLog.push('route:install');
+    },
+    unroute: async (
+      _url: string | RegExp,
+      handler: (route: {
+        request: () => { url: () => string; method: () => string; headers: () => Record<string, string> };
+        continue: () => Promise<void>;
+        abort: (errorCode?: string) => Promise<void>;
+        fulfill: (options: {
+          status?: number;
+          contentType?: string;
+          body?: string;
+          headers?: Record<string, string>;
+        }) => Promise<void>;
+      }) => Promise<void>,
+    ) => {
+      const index = routeHandlers.findIndex((entry) => entry === handler);
+      if (index >= 0) {
+        routeHandlers.splice(index, 1);
+      }
+      actionLog.push('route:remove');
     },
     pages: () => [page],
   };
@@ -940,5 +1016,89 @@ describe('BrowserSessionManager', () => {
     expect(connectorStub.state.actionLog()).toContain('clear-cookies');
     expect(connectorStub.state.actionLog()).toContain('restore-storage:https://example.com');
     expect(connectorStub.state.actionLog()).toContain('goto:https://example.com/dashboard');
+  });
+
+  it('applies route-block simulation rules during replay and emits timeline-friendly events', async () => {
+    const connectorStub = createConnectorStub();
+    const manager = new BrowserSessionManager(connectorStub.connector);
+    const observedCodes: string[] = [];
+    manager.registerSurface(createSurfaceStub());
+    manager.subscribe((event) => {
+      observedCodes.push(event.code);
+    });
+    await manager.launch({ targetUrl: 'https://example.com/' });
+
+    await expect(
+      manager.executeReplay({
+        targetUrl: 'https://example.com/',
+        steps: [
+          {
+            schemaVersion: domainVersions.domainSchemaVersion,
+            id: 'step-open-home',
+            title: 'Open home',
+            kind: 'action',
+            status: 'active',
+            evidenceState: 'stale',
+            createdAt: '2026-06-25T12:00:00.000Z',
+            updatedAt: '2026-06-25T12:00:00.000Z',
+            dependencyStepIds: [],
+            invalidatesEvidenceAfter: true,
+            action: {
+              type: 'navigate',
+              url: 'https://example.com/home',
+            },
+          },
+        ],
+        checkpoints: [],
+        plan: {
+          mode: 'from-start',
+          targetStepId: 'step-open-home',
+          checkpointId: null,
+          startStrategy: 'start',
+          executionStepIds: ['step-open-home'],
+        },
+        simulationRules: [
+          {
+            schemaVersion: domainVersions.domainSchemaVersion,
+            id: 'sim-domain-status',
+            enabled: true,
+            title: 'Domain status override',
+            appliesTo: 'global',
+            match: {
+              domain: 'example.com',
+              method: 'GET',
+            },
+            action: {
+              kind: 'forced-status',
+              status: 503,
+            },
+          },
+          {
+            schemaVersion: domainVersions.domainSchemaVersion,
+            id: 'sim-exact-block',
+            enabled: true,
+            title: 'Block home route',
+            appliesTo: 'global',
+            match: {
+              routePattern: 'https://example.com/home',
+              method: 'GET',
+            },
+            action: {
+              kind: 'route-block',
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow('route aborted with blockedbyclient');
+
+    expect(connectorStub.state.actionLog()).toContain('route:install');
+    expect(connectorStub.state.actionLog()).toContain(
+      'abort:https://example.com/home:blockedbyclient',
+    );
+    expect(connectorStub.state.actionLog()).not.toContain(
+      'fulfill:https://example.com/home:503',
+    );
+    expect(observedCodes).toContain('replay.simulation_rule.applied');
+    expect(observedCodes).toContain('replay.execution.failed');
   });
 });

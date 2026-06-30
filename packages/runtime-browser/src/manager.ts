@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
+import { readFile } from 'node:fs/promises';
 import type {
   Assertion,
   BrowserContextSnapshot,
   Checkpoint,
   RecordedStep,
   RedactionRule,
+  SimulationRule,
 } from '@browser-blackbox/domain';
 import { chromium } from 'playwright';
 import type {
@@ -54,6 +56,14 @@ type ConnectedPage = {
     cookies: () => Promise<BrowserContextSnapshot['cookies']>;
     addCookies: (cookies: BrowserContextSnapshot['cookies']) => Promise<void>;
     clearCookies: () => Promise<void>;
+    route: (
+      url: string | RegExp,
+      handler: (route: ConnectedRoute) => Promise<void>,
+    ) => Promise<void>;
+    unroute: (
+      url: string | RegExp,
+      handler: (route: ConnectedRoute) => Promise<void>,
+    ) => Promise<void>;
   };
   goto: (targetUrl: string) => Promise<unknown>;
   reload: () => Promise<unknown>;
@@ -68,6 +78,24 @@ type ConnectedPage = {
   url: () => string;
   evaluate: (pageFunction: (arg?: unknown) => unknown, arg?: unknown) => Promise<unknown>;
   [key: string]: unknown;
+};
+
+type ConnectedRoute = {
+  request: () => ConnectedRequest;
+  continue: () => Promise<void>;
+  abort: (errorCode?: string) => Promise<void>;
+  fulfill: (options: {
+    status?: number;
+    contentType?: string;
+    body?: string;
+    headers?: Record<string, string>;
+  }) => Promise<void>;
+};
+
+type ConnectedRequest = {
+  url: () => string;
+  method: () => string;
+  headers: () => Record<string, string>;
 };
 
 type ConnectedBrowser = {
@@ -133,6 +161,9 @@ export class BrowserSessionManager {
   private surface: ManagedBrowserSurface | null = null;
   private state: BrowserRuntimeState = DEFAULT_STATE;
   private activeRedactionRules: RedactionRule[] = [];
+  private activeSimulationRules: SimulationRule[] = [];
+  private replayRouteHandler: ((route: ConnectedRoute) => Promise<void>) | null = null;
+  private currentReplayStepId: string | null = null;
 
   constructor(private readonly connector: PlaywrightConnector = defaultConnector) {}
 
@@ -323,6 +354,7 @@ export class BrowserSessionManager {
     request: BrowserReplayRequest,
   ): Promise<BrowserReplayCommandResult> {
     this.activeRedactionRules = [...(request.redactionRules ?? this.activeRedactionRules)];
+    this.activeSimulationRules = [...(request.simulationRules ?? [])];
     if (this.state.phase !== 'running' || this.page === null) {
       throw new Error('A managed browser session must be running before replay can execute.');
     }
@@ -342,30 +374,34 @@ export class BrowserSessionManager {
       );
     }
 
-    if (shouldRestoreCheckpoint && checkpointRestorable) {
-      await this.restoreCheckpoint(selectedCheckpoint);
-    }
-
-    const stepsToExecute = this.resolveReplaySteps(
-      request.steps,
-      request.plan,
-      shouldRestoreCheckpoint && checkpointRestorable,
-    );
     const completedStepIds: string[] = [];
     const capturedCheckpoints: BrowserReplayCommandResult['capturedCheckpoints'] = [];
-    this.emitEvent(
-      'replay',
-      'replay.execution.started',
-      'info',
-      `Replay started in ${request.plan.mode} mode.`,
-      'runtime_manager',
-      {
-        mode: request.plan.mode,
-        targetStepId: request.plan.targetStepId,
-      },
-    );
 
     try {
+      await this.installReplaySimulationRules();
+
+      if (shouldRestoreCheckpoint && checkpointRestorable) {
+        await this.restoreCheckpoint(selectedCheckpoint);
+      }
+
+      const stepsToExecute = this.resolveReplaySteps(
+        request.steps,
+        request.plan,
+        shouldRestoreCheckpoint && checkpointRestorable,
+      );
+      this.emitEvent(
+        'replay',
+        'replay.execution.started',
+        'info',
+        `Replay started in ${request.plan.mode} mode.`,
+        'runtime_manager',
+        {
+          mode: request.plan.mode,
+          targetStepId: request.plan.targetStepId,
+          simulationRuleCount: this.activeSimulationRules.filter((rule) => rule.enabled).length,
+        },
+      );
+
       for (const step of stepsToExecute) {
         if (step.status === 'disabled') {
           this.emitEvent(
@@ -380,6 +416,7 @@ export class BrowserSessionManager {
         }
 
         try {
+          this.currentReplayStepId = step.id;
           await this.executeStep(step);
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
@@ -454,6 +491,8 @@ export class BrowserSessionManager {
         }
       }
 
+      this.currentReplayStepId = null;
+
       const pausedAtStepId =
         request.plan.mode === 'pause-on-step' ? request.plan.targetStepId : null;
       if (pausedAtStepId) {
@@ -490,6 +529,7 @@ export class BrowserSessionManager {
         capturedCheckpoints,
       };
     } catch (error) {
+      this.currentReplayStepId = null;
       const message = error instanceof Error ? error.message : String(error);
       this.state = {
         ...this.state,
@@ -509,6 +549,8 @@ export class BrowserSessionManager {
         message,
       );
       throw new Error(message);
+    } finally {
+      await this.removeReplaySimulationRules();
     }
   }
 
@@ -1390,6 +1432,130 @@ export class BrowserSessionManager {
       },
     );
   }
+
+  private async installReplaySimulationRules(): Promise<void> {
+    if (this.page === null || this.activeSimulationRules.every((rule) => !rule.enabled)) {
+      return;
+    }
+
+    await this.removeReplaySimulationRules();
+    this.replayRouteHandler = async (route) => {
+      const request = route.request();
+      const winningRule = this.selectWinningSimulationRule(
+        request.url(),
+        request.method(),
+        this.currentReplayStepId,
+      );
+
+      if (!winningRule) {
+        await route.continue();
+        return;
+      }
+
+      this.emitEvent(
+        'replay',
+        'replay.simulation_rule.applied',
+        'info',
+        `Applied simulation rule ${winningRule.title} to ${request.method()} ${request.url()}.`,
+        'runtime_manager',
+        {
+          ruleId: winningRule.id,
+          actionKind: winningRule.action.kind,
+          stepId: this.currentReplayStepId,
+          url: request.url(),
+        },
+      );
+
+      await this.applySimulationRule(winningRule, route, request);
+    };
+
+    await this.page.context().route('**/*', this.replayRouteHandler);
+  }
+
+  private async removeReplaySimulationRules(): Promise<void> {
+    if (this.page === null || this.replayRouteHandler === null) {
+      return;
+    }
+
+    await this.page.context().unroute('**/*', this.replayRouteHandler);
+    this.replayRouteHandler = null;
+  }
+
+  private selectWinningSimulationRule(
+    url: string,
+    method: string,
+    currentStepId: string | null,
+  ): SimulationRule | null {
+    const candidates = this.activeSimulationRules
+      .map((rule, index) => ({ index, rule }))
+      .filter(({ rule }) => rule.enabled && matchesSimulationRule(rule, url, method, currentStepId))
+      .sort((left, right) => {
+        const scoreDifference = scoreSimulationRule(right.rule) - scoreSimulationRule(left.rule);
+        return scoreDifference !== 0 ? scoreDifference : left.index - right.index;
+      });
+
+    return candidates[0]?.rule ?? null;
+  }
+
+  private async applySimulationRule(
+    rule: SimulationRule,
+    route: ConnectedRoute,
+    request: ConnectedRequest,
+  ): Promise<void> {
+    switch (rule.action.kind) {
+      case 'fixed-latency':
+        await delay(rule.action.valueMsOrKbps);
+        await route.continue();
+        return;
+      case 'latency-jitter':
+        await delay(resolveDeterministicJitter(rule.id, request.url(), rule.action.valueMsOrKbps));
+        await route.continue();
+        return;
+      case 'offline':
+        await route.abort('internetdisconnected');
+        return;
+      case 'route-block':
+        await route.abort('blockedbyclient');
+        return;
+      case 'forced-status':
+        await route.fulfill({
+          status: rule.action.status,
+          contentType: 'text/plain',
+          body: `Forced status ${rule.action.status} by ${rule.title}.`,
+        });
+        return;
+      case 'delayed-response': {
+        if (rule.action.delayMs > 0) {
+          await delay(rule.action.delayMs);
+        }
+        const fixture = rule.action.fixturePath
+          ? await loadResponseFixture(rule.action.fixturePath)
+          : null;
+        await route.fulfill({
+          status: rule.action.status ?? 200,
+          contentType: fixture?.contentType ?? 'text/plain',
+          body: fixture?.body ?? `Delayed response injected by ${rule.title}.`,
+        });
+        return;
+      }
+      case 'response-fixture': {
+        const fixture = await loadResponseFixture(rule.action.fixturePath);
+        await route.fulfill({
+          status: rule.action.status ?? 200,
+          contentType: fixture.contentType,
+          body: fixture.body,
+        });
+        return;
+      }
+      case 'throttle-upload':
+      case 'throttle-download':
+        throw new Error(
+          `Simulation rule ${rule.title} uses ${rule.action.kind}, which is not executable in the current runtime.`,
+        );
+      default:
+        throw new Error('Unsupported simulation rule action.');
+    }
+  }
 }
 
 const defaultConnector: PlaywrightConnector = {
@@ -1472,6 +1638,102 @@ async function maybeGetResponseBody(
 function globToRegExp(glob: string): RegExp {
   const escaped = glob.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
   return new RegExp(`^${escaped.replace(/\*/g, '.*')}$`);
+}
+
+function matchesSimulationRule(
+  rule: SimulationRule,
+  url: string,
+  method: string,
+  currentStepId: string | null,
+): boolean {
+  if (rule.match.method && rule.match.method.toUpperCase() !== method.toUpperCase()) {
+    return false;
+  }
+
+  if (rule.match.flowContext && rule.match.flowContext !== currentStepId) {
+    return false;
+  }
+
+  if (rule.match.domain) {
+    try {
+      if (new URL(url).hostname !== rule.match.domain) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  if (rule.match.routePattern && !globToRegExp(rule.match.routePattern).test(url)) {
+    return false;
+  }
+
+  return true;
+}
+
+function scoreSimulationRule(rule: SimulationRule): number {
+  let score = 0;
+
+  if (rule.match.routePattern) {
+    score += 300;
+    score += isExactRoutePattern(rule.match.routePattern) ? 100 : 25;
+    score += rule.match.routePattern.length;
+  }
+
+  if (rule.match.domain) {
+    score += 200 + rule.match.domain.length;
+  }
+
+  if (rule.match.method) {
+    score += 50;
+  }
+
+  if (rule.match.flowContext) {
+    score += 25;
+  }
+
+  return score;
+}
+
+function isExactRoutePattern(pattern: string): boolean {
+  return !pattern.includes('*') && !pattern.includes('?');
+}
+
+function resolveDeterministicJitter(ruleId: string, url: string, maxJitter: number): number {
+  const seed = `${ruleId}:${url}`;
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
+  }
+  return maxJitter === 0 ? 0 : hash % (maxJitter + 1);
+}
+
+async function loadResponseFixture(path: string): Promise<{ body: string; contentType: string }> {
+  const body = await readFile(path, 'utf8');
+  return {
+    body,
+    contentType: inferFixtureContentType(path),
+  };
+}
+
+function inferFixtureContentType(path: string): string {
+  if (path.endsWith('.json')) {
+    return 'application/json';
+  }
+
+  if (path.endsWith('.html')) {
+    return 'text/html';
+  }
+
+  if (path.endsWith('.xml')) {
+    return 'application/xml';
+  }
+
+  return 'text/plain';
+}
+
+function delay(durationMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, durationMs)));
 }
 
 function normalizeHeaderRecord(value: unknown): Record<string, string> {

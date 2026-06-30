@@ -114,6 +114,34 @@ test.describe('desktop acceptance', () => {
     );
   });
 
+  test('authors a simulation rule and applies it on the next replay', async () => {
+    await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
+    await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
+
+    await expect(statusRowPill(window, 'Phase')).toContainText('running');
+
+    const simulationPanel = window.getByTestId('simulation-rules-panel');
+    await simulationPanel.locator('#simulation-title').fill('Block home route');
+    await simulationPanel
+      .locator('#simulation-route-pattern')
+      .fill(`${fixtureServer.origin}/`);
+    await simulationPanel.locator('#simulation-domain').fill('');
+    await simulationPanel.locator('#simulation-method').fill('GET');
+    await simulationPanel.locator('#simulation-flow-context').fill('');
+    await simulationPanel.locator('#simulation-action-kind').selectOption('route-block');
+    await window.getByRole('button', { name: 'Add rule' }).click();
+
+    await expect(simulationPanel).toContainText('Block home route');
+
+    await window.getByRole('button', { name: 'Replay from start' }).click();
+    await window.getByRole('button', { name: 'Run replay' }).click();
+
+    await expect(window.locator('.event-stream')).toContainText(
+      'Applied simulation rule Block home route',
+    );
+    await expect(window.locator('.event-stream')).toContainText('Replay execution failed.');
+  });
+
   test('runs persistent inspect mode with hover overlay and selected metadata', async () => {
     await window.locator('#target-url').fill(`${fixtureServer.origin}/`);
     await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
