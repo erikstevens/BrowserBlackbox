@@ -4,6 +4,7 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 
 const bundledMainWorkspacePackages = [
   '@browser-blackbox/domain',
+  '@browser-blackbox/export',
   '@browser-blackbox/runtime-browser',
   '@browser-blackbox/persistence',
 ];

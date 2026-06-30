@@ -423,6 +423,13 @@ test.describe('desktop acceptance', () => {
     await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
     await expect(statusRowPill(window, 'Phase')).toContainText('running');
 
+    await expect(window.getByTestId('ui-export-preview')).toContainText(
+      `import { test, expect } from '@playwright/test';`,
+    );
+    await expect(window.getByTestId('ui-export-preview')).toContainText(
+      `await page.goto("${fixtureServer.origin}/");`,
+    );
+
     await electronApp.evaluate(async ({ BrowserWindow }) => {
       const browserWindow = BrowserWindow.getAllWindows()[0];
       const view = browserWindow?.getBrowserView();

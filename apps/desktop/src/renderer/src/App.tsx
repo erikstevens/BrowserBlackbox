@@ -6,6 +6,8 @@ import {
   type RedactionRule,
   type RequestResponseCapture,
 } from '@browser-blackbox/domain';
+import { generatePlaywrightUiTest } from '@browser-blackbox/export';
+import type { PlaywrightUiExportWarning } from '@browser-blackbox/export';
 import type {
   ArtifactBundleExportResult,
   ArtifactExportMode,
@@ -95,6 +97,13 @@ export function App() {
     null;
   const { canUndo, canRedo } = getRecordingUndoAvailability(recordingSession);
   const artifactExportAssessment = assessArtifactExportSafety(exportWorkingCopySnapshot());
+  const generatedUiTest = generatePlaywrightUiTest({
+    flowTitle:
+      recordingSession.present.steps[0]?.title
+        ? `${recordingSession.present.steps[0].title} flow`
+        : undefined,
+    steps: recordingSession.present.steps,
+  });
   const selectedStepIndex = selectedRecordedStep
     ? recordingSession.present.steps.findIndex((step) => step.id === selectedRecordedStep.id)
     : -1;
@@ -757,6 +766,47 @@ export function App() {
                     ))
                   )}
                 </div>
+              </div>
+
+              <div className="network-detail-card">
+                <p className="section-label">Playwright UI export preview</p>
+                <p className="inspection-reason">
+                  This preview is generated directly from the canonical recorded flow and
+                  written into the artifact bundle as a standard Playwright `*.spec.ts` file.
+                </p>
+                <div className="runtime-status">
+                  <p className="status-row">
+                    <span className="status-label">Export file</span>
+                    <span className="status-value">{generatedUiTest.fileName}</span>
+                  </p>
+                  <p className="status-row">
+                    <span className="status-label">Test name</span>
+                    <span className="status-value">{generatedUiTest.testName}</span>
+                  </p>
+                </div>
+                {generatedUiTest.warnings.length > 0 ? (
+                  <div className="checkpoint-list" data-testid="ui-export-warnings">
+                    {generatedUiTest.warnings.map((warning: PlaywrightUiExportWarning) => (
+                      <div className="step-review-card" key={`${warning.kind}-${warning.stepId}`}>
+                        <div className="step-review-header">
+                          <span className="step-index">{warning.kind}</span>
+                          <span className="status-value">{warning.stepId}</span>
+                        </div>
+                        <p className="step-summary">{warning.title}</p>
+                        {'detail' in warning ? (
+                          <p className="inspection-reason">{warning.detail}</p>
+                        ) : (
+                          <p className="inspection-reason">
+                            Disabled steps are omitted from the default export.
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                <pre className="network-body-text" data-testid="ui-export-preview">
+                  {generatedUiTest.code}
+                </pre>
               </div>
 
               <div className="network-detail-card">

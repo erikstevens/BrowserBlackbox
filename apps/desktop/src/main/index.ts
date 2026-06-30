@@ -4,6 +4,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { domainVersions, parseInspectionMetadata, parseRedactionRule } from '@browser-blackbox/domain';
+import { generatePlaywrightUiTest } from '@browser-blackbox/export';
 import { FileBackedSqliteStore } from '@browser-blackbox/persistence/src/file-store';
 import type {
   ArtifactBundleExportResult,
@@ -553,11 +554,22 @@ function registerWorkspaceBrowserListeners(view: BrowserView): void {
 }
 
 function createExportArtifactSnapshot(snapshot: StoredRunSnapshot): StoredRunSnapshot {
+  const generatedUiTest = generatePlaywrightUiTest({
+    flowTitle: snapshot.steps[0]?.title ? `${snapshot.steps[0].title} flow` : undefined,
+    steps: snapshot.steps,
+  });
+
   return {
     ...snapshot,
     manifest: {
       ...snapshot.manifest,
       artifacts: [
+        {
+          path: generatedUiTest.fileName,
+          kind: 'generated-test',
+          required: false,
+          present: true,
+        },
         {
           path: 'workspace/replay-metadata.json',
           kind: 'replay-metadata',
@@ -598,13 +610,20 @@ function createExportArtifactContents(
   assessment: ArtifactExportSafetyAssessment,
   mode: ArtifactExportMode,
 ): Record<string, string> {
+  const generatedUiTest = generatePlaywrightUiTest({
+    flowTitle: snapshot.steps[0]?.title ? `${snapshot.steps[0].title} flow` : undefined,
+    steps: snapshot.steps,
+  });
+
   return {
+    [generatedUiTest.fileName]: generatedUiTest.code,
     'workspace/replay-metadata.json': `${JSON.stringify(
       {
         runId: snapshot.session.runId,
         targetUrl: snapshot.session.targetUrl,
         exportedAt: new Date().toISOString(),
         redactionPolicyVersion: snapshot.manifest.redactionPolicyVersion,
+        generatedUiTestWarnings: generatedUiTest.warnings,
       },
       null,
       2,
