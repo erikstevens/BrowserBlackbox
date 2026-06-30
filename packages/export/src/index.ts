@@ -1,4 +1,10 @@
-import type { Assertion, CaptureBody, RecordedStep, RequestResponseCapture } from '@browser-blackbox/domain';
+import type {
+  Assertion,
+  CaptureBody,
+  RecordedStep,
+  RequestResponseCapture,
+  SimulationRule,
+} from '@browser-blackbox/domain';
 
 export type PlaywrightUiExportWarning =
   | {
@@ -9,6 +15,12 @@ export type PlaywrightUiExportWarning =
   | {
       kind: 'unsupported-step-omitted';
       stepId: string;
+      title: string;
+      detail: string;
+    }
+  | {
+      kind: 'unsupported-simulation-rule-omitted';
+      ruleId: string;
       title: string;
       detail: string;
     };
@@ -58,10 +70,35 @@ export type ApiCollectionExportResult = {
   warnings: ApiExportWarning[];
 };
 
+export type SimulationExportWarning =
+  | {
+      kind: 'unsupported-simulation-rule-omitted';
+      ruleId: string;
+      title: string;
+      detail: string;
+    }
+  | {
+      kind: 'simulation-fixture-required';
+      ruleId: string;
+      title: string;
+      detail: string;
+    };
+
+export type PlaywrightSimulationExportResult = {
+  fileName: string;
+  code: string;
+  warnings: SimulationExportWarning[];
+  exportedRuleIds: string[];
+};
+
 type ApiExportInput = {
   flowTitle?: string;
   steps?: RecordedStep[];
   captures: RequestResponseCapture[];
+};
+
+type SimulationExportInput = {
+  simulationRules: SimulationRule[];
 };
 
 type ApiExportModel = {
@@ -120,10 +157,21 @@ type ApiFixtureBody =
       reason: string;
     };
 
+type EmittedSimulationRule = {
+  ruleId: string;
+  routePattern: string;
+  handlerLines: string[];
+  usesFixture: boolean;
+};
+
 export function generatePlaywrightUiTest(input: {
   flowTitle?: string;
   steps: RecordedStep[];
+  simulationRules?: SimulationRule[];
 }): PlaywrightUiExportResult {
+  const simulationMapping = generatePlaywrightSimulationRules({
+    simulationRules: input.simulationRules ?? [],
+  });
   const activeSteps = input.steps.filter((step) => step.status === 'active');
   const warnings: PlaywrightUiExportWarning[] = input.steps
     .filter((step) => step.status === 'disabled')
@@ -152,11 +200,37 @@ export function generatePlaywrightUiTest(input: {
     });
   }
 
+  warnings.push(
+    ...simulationMapping.warnings.map((warning) => ({
+      kind: 'unsupported-simulation-rule-omitted' as const,
+      ruleId: warning.ruleId,
+      title: warning.title,
+      detail: warning.detail,
+    })),
+  );
+
+  const imports = [`import { test, expect } from '@playwright/test';`];
+  if (simulationMapping.exportedRuleIds.length > 0) {
+    imports.push(`import { installSimulationRules } from './simulation-rules';`);
+  }
+
   const code = [
-    `import { test, expect } from '@playwright/test';`,
+    ...imports,
     ``,
     `test(${JSON.stringify(testName)}, async ({ page }) => {`,
-    ...indentLines(bodyLines.length > 0 ? bodyLines : [`// No active supported steps were available for export.`]),
+    ...indentLines(
+      [
+        ...(simulationMapping.exportedRuleIds.length > 0
+          ? [`const removeSimulationRules = await installSimulationRules(page);`, ``]
+          : []),
+        ...(bodyLines.length > 0
+          ? bodyLines
+          : [`// No active supported steps were available for export.`]),
+        ...(simulationMapping.exportedRuleIds.length > 0
+          ? [``, `await removeSimulationRules();`]
+          : []),
+      ],
+    ),
     `});`,
     ``,
   ].join('\n');
@@ -166,6 +240,65 @@ export function generatePlaywrightUiTest(input: {
     testName,
     code,
     warnings,
+  };
+}
+
+export function generatePlaywrightSimulationRules(
+  input: SimulationExportInput,
+): PlaywrightSimulationExportResult {
+  const fileName = 'generated/simulation-rules.ts';
+  const warnings: SimulationExportWarning[] = [];
+  const executableRules = input.simulationRules
+    .filter((rule) => rule.enabled)
+    .flatMap((rule) => {
+      const emitted = emitSimulationRule(rule, warnings);
+      return emitted ? [emitted] : [];
+    });
+  const requiresReadFile = executableRules.some((rule) => rule.usesFixture);
+  const importLines = [
+    `import type { Page } from '@playwright/test';`,
+    ...(requiresReadFile ? [`import { readFile } from 'node:fs/promises';`] : []),
+  ];
+  const bodyLines =
+    executableRules.length === 0
+      ? [`return async () => {};`]
+      : [
+          `const cleanup: Array<() => Promise<void>> = [];`,
+          ``,
+          ...executableRules.flatMap((rule) => [
+            `await page.route(${JSON.stringify(rule.routePattern)}, async (route) => {`,
+            ...indentLines(rule.handlerLines, 1),
+            `});`,
+            `cleanup.push(async () => {`,
+            ...indentLines([`await page.unroute(${JSON.stringify(rule.routePattern)});`], 1),
+            `});`,
+            ``,
+          ]),
+          `return async () => {`,
+          ...indentLines([`for (const remove of cleanup.reverse()) {`, `  await remove();`, `}`], 1),
+          `};`,
+        ];
+
+  return {
+    fileName,
+    exportedRuleIds: executableRules.map((rule) => rule.ruleId),
+    warnings,
+    code: [
+      ...importLines,
+      ``,
+      `export async function installSimulationRules(page: Page): Promise<() => Promise<void>> {`,
+      ...indentLines(trimTrailingBlankLines(bodyLines)),
+      `}`,
+      ``,
+      ...(requiresReadFile
+        ? [
+            `async function loadFixtureBody(path: string): Promise<string> {`,
+            ...indentLines([`return readFile(path, 'utf8');`]),
+            `}`,
+            ``,
+          ]
+        : []),
+    ].join('\n'),
   };
 }
 
@@ -823,6 +956,166 @@ function describeUnsupportedStep(step: RecordedStep): string {
   }
 
   return `Action type ${step.action.type} is not exported in Phase 8 slice 1.`;
+}
+
+function emitSimulationRule(
+  rule: SimulationRule,
+  warnings: SimulationExportWarning[],
+): EmittedSimulationRule | null {
+  const routePattern = rule.match.routePattern ?? (rule.match.domain ? `**/*` : '**/*');
+  const guardLines = buildSimulationRequestGuards(rule);
+
+  switch (rule.action.kind) {
+    case 'fixed-latency':
+      return {
+        ruleId: rule.id,
+        routePattern,
+        usesFixture: false,
+        handlerLines: [
+          ...guardLines,
+          `await new Promise((resolve) => setTimeout(resolve, ${rule.action.valueMsOrKbps}));`,
+          `await route.continue();`,
+        ],
+      };
+    case 'offline':
+      return {
+        ruleId: rule.id,
+        routePattern,
+        usesFixture: false,
+        handlerLines: [...guardLines, `await route.abort('internetdisconnected');`],
+      };
+    case 'route-block':
+      return {
+        ruleId: rule.id,
+        routePattern,
+        usesFixture: false,
+        handlerLines: [...guardLines, `await route.abort('blockedbyclient');`],
+      };
+    case 'forced-status':
+      return {
+        ruleId: rule.id,
+        routePattern,
+        usesFixture: false,
+        handlerLines: [
+          ...guardLines,
+          `await route.fulfill({`,
+          ...indentLines(
+            [
+              `status: ${rule.action.status},`,
+              `contentType: 'text/plain',`,
+              `body: ${JSON.stringify(`Forced status ${rule.action.status} by ${rule.title}.`)},`,
+            ],
+            1,
+          ),
+          `});`,
+        ],
+      };
+    case 'delayed-response': {
+      const responseLines = rule.action.fixturePath
+        ? [
+            `const fixtureBody = await loadFixtureBody(${JSON.stringify(rule.action.fixturePath)});`,
+            `await route.fulfill({`,
+            ...indentLines(
+              [
+                `status: ${rule.action.status ?? 200},`,
+                `body: fixtureBody,`,
+              ],
+              1,
+            ),
+            `});`,
+          ]
+        : [
+            `await route.fulfill({`,
+            ...indentLines(
+              [
+                `status: ${rule.action.status ?? 200},`,
+                `contentType: 'text/plain',`,
+                `body: ${JSON.stringify(`Delayed response injected by ${rule.title}.`)},`,
+              ],
+              1,
+            ),
+            `});`,
+          ];
+      return {
+        ruleId: rule.id,
+        routePattern,
+        usesFixture: Boolean(rule.action.fixturePath),
+        handlerLines: [
+          ...guardLines,
+          `await new Promise((resolve) => setTimeout(resolve, ${rule.action.delayMs}));`,
+          ...responseLines,
+        ],
+      };
+    }
+    case 'response-fixture':
+      if (rule.action.fixturePath.trim().length === 0) {
+        warnings.push({
+          kind: 'simulation-fixture-required',
+          ruleId: rule.id,
+          title: rule.title,
+          detail: 'Response fixture export requires a readable fixture path.',
+        });
+        return null;
+      }
+
+      return {
+        ruleId: rule.id,
+        routePattern,
+        usesFixture: true,
+        handlerLines: [
+          ...guardLines,
+          `const fixtureBody = await loadFixtureBody(${JSON.stringify(rule.action.fixturePath)});`,
+          `await route.fulfill({`,
+          ...indentLines(
+            [
+              `status: ${rule.action.status ?? 200},`,
+              `body: fixtureBody,`,
+            ],
+            1,
+          ),
+          `});`,
+        ],
+      };
+    case 'latency-jitter':
+    case 'throttle-upload':
+    case 'throttle-download':
+      warnings.push({
+        kind: 'unsupported-simulation-rule-omitted',
+        ruleId: rule.id,
+        title: rule.title,
+        detail: `Simulation action ${rule.action.kind} is not exported into Playwright code in Phase 8 slice 5.`,
+      });
+      return null;
+    default:
+      warnings.push({
+        kind: 'unsupported-simulation-rule-omitted',
+        ruleId: rule.id,
+        title: rule.title,
+        detail: `Simulation action ${(rule as { action: { kind: string } }).action.kind} is not exported into Playwright code in Phase 8 slice 5.`,
+      });
+      return null;
+  }
+}
+
+function buildSimulationRequestGuards(rule: SimulationRule): string[] {
+  const guards: string[] = [];
+  if (rule.match.method) {
+    guards.push(
+      `if (route.request().method() !== ${JSON.stringify(rule.match.method.toUpperCase())}) {`,
+      ...indentLines([`await route.continue();`, `return;`]),
+      `}`,
+    );
+  }
+
+  if (rule.match.domain) {
+    guards.push(
+      `if (new URL(route.request().url()).hostname !== ${JSON.stringify(rule.match.domain)}) {`,
+      ...indentLines([`await route.continue();`, `return;`]),
+      `}`,
+    );
+  }
+
+  return guards;
 }
 
 function safeParseJson(value: string): unknown | undefined {

@@ -140,6 +140,9 @@ test.describe('desktop acceptance', () => {
       'Applied simulation rule Block home route',
     );
     await expect(window.locator('.event-stream')).toContainText('Replay execution failed.');
+    await expect(window.getByTestId('simulation-activity-panel')).toContainText(
+      'Applied simulation rule Block home route',
+    );
   });
 
   test('runs persistent inspect mode with hover overlay and selected metadata', async () => {
@@ -458,6 +461,17 @@ test.describe('desktop acceptance', () => {
       `await page.goto("${fixtureServer.origin}/");`,
     );
 
+    const simulationPanel = window.getByTestId('simulation-rules-panel');
+    await simulationPanel.locator('#simulation-title').fill('Block profile route');
+    await simulationPanel
+      .locator('#simulation-route-pattern')
+      .fill('**/api/profile');
+    await simulationPanel.locator('#simulation-domain').fill('');
+    await simulationPanel.locator('#simulation-method').fill('POST');
+    await simulationPanel.locator('#simulation-flow-context').fill('');
+    await simulationPanel.locator('#simulation-action-kind').selectOption('route-block');
+    await window.getByRole('button', { name: 'Add rule' }).click();
+
     await electronApp.evaluate(async ({ BrowserWindow }) => {
       const browserWindow = BrowserWindow.getAllWindows()[0];
       const view = browserWindow?.getBrowserView();
@@ -480,6 +494,15 @@ test.describe('desktop acceptance', () => {
 
     const exportPanel = window.getByTestId('artifact-export-panel');
     await expect(exportPanel).toContainText('Some captured full bodies still look sensitive');
+    await expect(window.getByTestId('ui-export-preview')).toContainText(
+      `import { installSimulationRules } from './simulation-rules';`,
+    );
+    await expect(window.getByTestId('simulation-export-preview')).toContainText(
+      `await page.route("**/api/profile", async (route) => {`,
+    );
+    await expect(window.getByTestId('simulation-export-preview')).toContainText(
+      `await route.abort('blockedbyclient');`,
+    );
     await expect(window.getByTestId('api-export-preview')).toContainText(
       `const baseURL = process.env.BASE_URL ?? "${fixtureServer.origin}";`,
     );

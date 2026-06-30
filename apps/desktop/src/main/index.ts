@@ -8,6 +8,7 @@ import {
   generateApiCollection,
   generateApiRequestFixture,
   generatePlaywrightApiTest,
+  generatePlaywrightSimulationRules,
   generatePlaywrightUiTest,
 } from '@browser-blackbox/export';
 import { FileBackedSqliteStore } from '@browser-blackbox/persistence/src/file-store';
@@ -562,6 +563,10 @@ function createExportArtifactSnapshot(snapshot: StoredRunSnapshot): StoredRunSna
   const generatedUiTest = generatePlaywrightUiTest({
     flowTitle: snapshot.steps[0]?.title ? `${snapshot.steps[0].title} flow` : undefined,
     steps: snapshot.steps,
+    simulationRules: snapshot.simulationRules,
+  });
+  const generatedSimulationRules = generatePlaywrightSimulationRules({
+    simulationRules: snapshot.simulationRules,
   });
   const generatedApiTest = generatePlaywrightApiTest({
     flowTitle: snapshot.steps[0]?.title ? `${snapshot.steps[0].title} flow` : undefined,
@@ -590,6 +595,16 @@ function createExportArtifactSnapshot(snapshot: StoredRunSnapshot): StoredRunSna
           required: false,
           present: true,
         },
+        ...(snapshot.simulationRules.length > 0
+          ? [
+              {
+                path: generatedSimulationRules.fileName,
+                kind: 'generated-test' as const,
+                required: false,
+                present: true,
+              },
+            ]
+          : []),
         {
           path: generatedApiTest.fileName,
           kind: 'generated-test',
@@ -651,6 +666,10 @@ function createExportArtifactContents(
   const generatedUiTest = generatePlaywrightUiTest({
     flowTitle: snapshot.steps[0]?.title ? `${snapshot.steps[0].title} flow` : undefined,
     steps: snapshot.steps,
+    simulationRules: snapshot.simulationRules,
+  });
+  const generatedSimulationRules = generatePlaywrightSimulationRules({
+    simulationRules: snapshot.simulationRules,
   });
   const generatedApiTest = generatePlaywrightApiTest({
     flowTitle: snapshot.steps[0]?.title ? `${snapshot.steps[0].title} flow` : undefined,
@@ -670,6 +689,11 @@ function createExportArtifactContents(
 
   return {
     [generatedUiTest.fileName]: generatedUiTest.code,
+    ...(snapshot.simulationRules.length > 0
+      ? {
+          [generatedSimulationRules.fileName]: generatedSimulationRules.code,
+        }
+      : {}),
     [generatedApiTest.fileName]: generatedApiTest.code,
     [generatedApiFixture.fileName]: generatedApiFixture.code,
     [generatedApiCollection.fileName]: generatedApiCollection.code,
@@ -680,9 +704,11 @@ function createExportArtifactContents(
         exportedAt: new Date().toISOString(),
         redactionPolicyVersion: snapshot.manifest.redactionPolicyVersion,
         generatedUiTestWarnings: generatedUiTest.warnings,
+        generatedSimulationWarnings: generatedSimulationRules.warnings,
         generatedApiTestWarnings: generatedApiTest.warnings,
         generatedApiFixtureWarnings: generatedApiFixture.warnings,
         generatedApiCollectionWarnings: generatedApiCollection.warnings,
+        simulationRules: snapshot.simulationRules,
       },
       null,
       2,

@@ -12,9 +12,14 @@ import {
   generateApiCollection,
   generateApiRequestFixture,
   generatePlaywrightApiTest,
+  generatePlaywrightSimulationRules,
   generatePlaywrightUiTest,
 } from '@browser-blackbox/export';
-import type { ApiExportWarning, PlaywrightUiExportWarning } from '@browser-blackbox/export';
+import type {
+  ApiExportWarning,
+  PlaywrightUiExportWarning,
+  SimulationExportWarning,
+} from '@browser-blackbox/export';
 import type {
   ArtifactBundleExportResult,
   ArtifactExportMode,
@@ -129,6 +134,10 @@ export function App() {
         ? `${recordingSession.present.steps[0].title} flow`
         : undefined,
     steps: recordingSession.present.steps,
+    simulationRules,
+  });
+  const generatedSimulationRules = generatePlaywrightSimulationRules({
+    simulationRules,
   });
   const generatedApiTest = generatePlaywrightApiTest({
     flowTitle:
@@ -161,6 +170,9 @@ export function App() {
     (selectedSimulationRuleId
       ? simulationRules.find((rule) => rule.id === selectedSimulationRuleId) ?? null
       : null);
+  const appliedSimulationTimeline = timeline.filter(
+    (entry) => entry.kind === 'simulation-rule',
+  );
 
   useEffect(() => {
     void window.desktopShell
@@ -917,14 +929,25 @@ export function App() {
                     <span className="status-label">Test name</span>
                     <span className="status-value">{generatedUiTest.testName}</span>
                   </p>
+                  {simulationRules.length > 0 ? (
+                    <p className="status-row">
+                      <span className="status-label">Simulation helper</span>
+                      <span className="status-value">{generatedSimulationRules.fileName}</span>
+                    </p>
+                  ) : null}
                 </div>
                 {generatedUiTest.warnings.length > 0 ? (
                   <div className="checkpoint-list" data-testid="ui-export-warnings">
                     {generatedUiTest.warnings.map((warning: PlaywrightUiExportWarning) => (
-                      <div className="step-review-card" key={`${warning.kind}-${warning.stepId}`}>
+                      <div
+                        className="step-review-card"
+                        key={`${warning.kind}-${'stepId' in warning ? warning.stepId : warning.ruleId}`}
+                      >
                         <div className="step-review-header">
                           <span className="step-index">{warning.kind}</span>
-                          <span className="status-value">{warning.stepId}</span>
+                          <span className="status-value">
+                            {'stepId' in warning ? warning.stepId : warning.ruleId}
+                          </span>
                         </div>
                         <p className="step-summary">{warning.title}</p>
                         {'detail' in warning ? (
@@ -941,6 +964,38 @@ export function App() {
                 <pre className="network-body-text" data-testid="ui-export-preview">
                   {generatedUiTest.code}
                 </pre>
+                {simulationRules.length > 0 ? (
+                  <>
+                    {generatedSimulationRules.warnings.length > 0 ? (
+                      <div
+                        className="checkpoint-list"
+                        data-testid="simulation-export-warnings"
+                      >
+                        {generatedSimulationRules.warnings.map(
+                          (warning: SimulationExportWarning) => (
+                            <div
+                              className="step-review-card"
+                              key={`${warning.kind}-${warning.ruleId}`}
+                            >
+                              <div className="step-review-header">
+                                <span className="step-index">{warning.kind}</span>
+                                <span className="status-value">{warning.ruleId}</span>
+                              </div>
+                              <p className="step-summary">{warning.title}</p>
+                              <p className="inspection-reason">{warning.detail}</p>
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    ) : null}
+                    <pre
+                      className="network-body-text"
+                      data-testid="simulation-export-preview"
+                    >
+                      {generatedSimulationRules.code}
+                    </pre>
+                  </>
+                ) : null}
               </div>
 
               <div className="network-detail-card">
@@ -1816,6 +1871,38 @@ export function App() {
                   </p>
                 )}
               </div>
+            </div>
+          </article>
+
+          <article className="panel full-width-panel">
+            <div className="panel-header">
+              <div>
+                <p className="section-label">Simulation activity</p>
+                <p className="panel-copy">
+                  Applied simulation rules are surfaced in the unified timeline so you
+                  can see which rule actually won during replay.
+                </p>
+              </div>
+            </div>
+            <div className="checkpoint-list" data-testid="simulation-activity-panel">
+              {appliedSimulationTimeline.length === 0 ? (
+                <p className="empty-state">
+                  No simulation rules have been applied in the current evidence set.
+                </p>
+              ) : (
+                appliedSimulationTimeline.map((entry) =>
+                  entry.kind === 'simulation-rule' ? (
+                    <div className="step-review-card" key={entry.id}>
+                      <div className="step-review-header">
+                        <span className="step-index">simulation-rule</span>
+                        <span className="status-value">{entry.ruleId}</span>
+                      </div>
+                      <p className="step-summary">{entry.summary}</p>
+                      <p className="inspection-reason">{formatTimestamp(entry.timestamp)}</p>
+                    </div>
+                  ) : null,
+                )
+              )}
             </div>
           </article>
 

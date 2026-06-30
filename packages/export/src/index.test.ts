@@ -3,12 +3,14 @@ import {
   requestResponseCaptureFixture,
   type RecordedStep,
   type RequestResponseCapture,
+  type SimulationRule,
 } from '@browser-blackbox/domain';
 import { describe, expect, it } from 'vitest';
 import {
   generateApiCollection,
   generateApiRequestFixture,
   generatePlaywrightApiTest,
+  generatePlaywrightSimulationRules,
   generatePlaywrightUiTest,
 } from './index';
 
@@ -71,18 +73,37 @@ describe('generatePlaywrightUiTest', () => {
     const result = generatePlaywrightUiTest({
       flowTitle: 'Login flow',
       steps,
+      simulationRules: [
+        {
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: 'sim-login-block',
+          enabled: true,
+          title: 'Block login API',
+          appliesTo: 'global',
+          match: {
+            routePattern: '**/api/login',
+            method: 'POST',
+          },
+          action: {
+            kind: 'route-block',
+          },
+        },
+      ],
     });
 
     expect(result.fileName).toBe('generated/test.spec.ts');
     expect(result.testName).toBe('Login flow');
     expect(result.warnings).toEqual([]);
     expect(result.code).toContain(`import { test, expect } from '@playwright/test';`);
+    expect(result.code).toContain(`import { installSimulationRules } from './simulation-rules';`);
     expect(result.code).toContain(`test("Login flow", async ({ page }) => {`);
+    expect(result.code).toContain(`const removeSimulationRules = await installSimulationRules(page);`);
     expect(result.code).toContain(`await page.goto("https://example.test/login");`);
     expect(result.code).toContain(`await page.getByLabel("Email").fill("qa@example.test");`);
     expect(result.code).toContain(
       `await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();`,
     );
+    expect(result.code).toContain(`await removeSimulationRules();`);
   });
 
   it('omits disabled and unsupported steps while reporting warnings', () => {
@@ -138,6 +159,85 @@ describe('generatePlaywrightUiTest', () => {
       },
     ]);
     expect(result.code).toContain('No active supported steps were available for export.');
+  });
+});
+
+describe('generatePlaywrightSimulationRules', () => {
+  it('exports supported simulation rules as readable Playwright routing code', () => {
+    const rules: SimulationRule[] = [
+      {
+        schemaVersion: domainVersions.domainSchemaVersion,
+        id: 'sim-route-block',
+        enabled: true,
+        title: 'Block login',
+        appliesTo: 'global',
+        match: {
+          routePattern: '**/api/login',
+          method: 'POST',
+        },
+        action: {
+          kind: 'route-block',
+        },
+      },
+      {
+        schemaVersion: domainVersions.domainSchemaVersion,
+        id: 'sim-forced-status',
+        enabled: true,
+        title: 'Force profile status',
+        appliesTo: 'global',
+        match: {
+          routePattern: '**/api/profile',
+          method: 'GET',
+        },
+        action: {
+          kind: 'forced-status',
+          status: 503,
+        },
+      },
+    ];
+
+    const result = generatePlaywrightSimulationRules({ simulationRules: rules });
+
+    expect(result.fileName).toBe('generated/simulation-rules.ts');
+    expect(result.exportedRuleIds).toEqual(['sim-route-block', 'sim-forced-status']);
+    expect(result.warnings).toEqual([]);
+    expect(result.code).toContain(`export async function installSimulationRules(page: Page)`);
+    expect(result.code).toContain(`await page.route("**/api/login", async (route) => {`);
+    expect(result.code).toContain(`await route.abort('blockedbyclient');`);
+    expect(result.code).toContain(`await page.route("**/api/profile", async (route) => {`);
+    expect(result.code).toContain(`status: 503,`);
+  });
+
+  it('warns when a simulation rule cannot be represented faithfully', () => {
+    const result = generatePlaywrightSimulationRules({
+      simulationRules: [
+        {
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: 'sim-throttle',
+          enabled: true,
+          title: 'Throttle upload',
+          appliesTo: 'global',
+          match: {
+            routePattern: '**/api/upload',
+          },
+          action: {
+            kind: 'throttle-upload',
+            valueMsOrKbps: 32,
+          },
+        },
+      ],
+    });
+
+    expect(result.exportedRuleIds).toEqual([]);
+    expect(result.warnings).toEqual([
+      {
+        kind: 'unsupported-simulation-rule-omitted',
+        ruleId: 'sim-throttle',
+        title: 'Throttle upload',
+        detail: 'Simulation action throttle-upload is not exported into Playwright code in Phase 8 slice 5.',
+      },
+    ]);
+    expect(result.code).toContain(`return async () => {};`);
   });
 });
 
