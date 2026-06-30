@@ -5,6 +5,7 @@ import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { domainVersions, parseInspectionMetadata, parseRedactionRule } from '@browser-blackbox/domain';
 import {
+  generateApiCollection,
   generateApiRequestFixture,
   generatePlaywrightApiTest,
   generatePlaywrightUiTest,
@@ -572,6 +573,11 @@ function createExportArtifactSnapshot(snapshot: StoredRunSnapshot): StoredRunSna
     steps: snapshot.steps,
     captures: snapshot.captures,
   });
+  const generatedApiCollection = generateApiCollection({
+    flowTitle: snapshot.steps[0]?.title ? `${snapshot.steps[0].title} flow` : undefined,
+    steps: snapshot.steps,
+    captures: snapshot.captures,
+  });
 
   return {
     ...snapshot,
@@ -593,6 +599,12 @@ function createExportArtifactSnapshot(snapshot: StoredRunSnapshot): StoredRunSna
         {
           path: generatedApiFixture.fileName,
           kind: 'fixture',
+          required: false,
+          present: true,
+        },
+        {
+          path: generatedApiCollection.fileName,
+          kind: 'api-collection',
           required: false,
           present: true,
         },
@@ -650,11 +662,17 @@ function createExportArtifactContents(
     steps: snapshot.steps,
     captures: snapshot.captures,
   });
+  const generatedApiCollection = generateApiCollection({
+    flowTitle: snapshot.steps[0]?.title ? `${snapshot.steps[0].title} flow` : undefined,
+    steps: snapshot.steps,
+    captures: snapshot.captures,
+  });
 
   return {
     [generatedUiTest.fileName]: generatedUiTest.code,
     [generatedApiTest.fileName]: generatedApiTest.code,
     [generatedApiFixture.fileName]: generatedApiFixture.code,
+    [generatedApiCollection.fileName]: generatedApiCollection.code,
     'workspace/replay-metadata.json': `${JSON.stringify(
       {
         runId: snapshot.session.runId,
@@ -664,6 +682,7 @@ function createExportArtifactContents(
         generatedUiTestWarnings: generatedUiTest.warnings,
         generatedApiTestWarnings: generatedApiTest.warnings,
         generatedApiFixtureWarnings: generatedApiFixture.warnings,
+        generatedApiCollectionWarnings: generatedApiCollection.warnings,
       },
       null,
       2,

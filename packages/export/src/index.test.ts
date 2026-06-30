@@ -6,6 +6,7 @@ import {
 } from '@browser-blackbox/domain';
 import { describe, expect, it } from 'vitest';
 import {
+  generateApiCollection,
   generateApiRequestFixture,
   generatePlaywrightApiTest,
   generatePlaywrightUiTest,
@@ -288,5 +289,65 @@ describe('generateApiRequestFixture', () => {
     expect(parsed.groups[0]?.title).toBe('Submit login');
     expect(parsed.groups[0]?.requests[0]?.urlTemplate).toBe('/api/login');
     expect(parsed.groups[0]?.requests[0]?.response?.status).toBe(200);
+  });
+});
+
+describe('generateApiCollection', () => {
+  it('exports a Postman-compatible grouped collection with example responses', () => {
+    const result = generateApiCollection({
+      flowTitle: 'Login flow',
+      steps: [
+        {
+          schemaVersion: domainVersions.domainSchemaVersion,
+          id: 'step-login-submit',
+          title: 'Submit login',
+          kind: 'action',
+          status: 'active',
+          evidenceState: 'current',
+          createdAt: '2026-06-30T00:00:00.000Z',
+          updatedAt: '2026-06-30T00:00:00.000Z',
+          dependencyStepIds: [],
+          invalidatesEvidenceAfter: true,
+          action: {
+            type: 'click',
+            selector: 'page.getByRole("button", { name: "Sign in" })',
+          },
+        },
+      ],
+      captures: [requestResponseCaptureFixture],
+    });
+
+    expect(result.fileName).toBe('collections/postman.collection.json');
+    expect(result.warnings).toEqual([]);
+    const parsed = JSON.parse(result.code) as {
+      info: { schema: string; name: string };
+      variable: Array<{ key: string; value: string }>;
+      item: Array<{
+        name: string;
+        item: Array<{
+          name: string;
+          request: { url: string; body?: { options: { raw: { language: string } } } };
+          response: Array<{ code: number; body: string; _postman_previewlanguage?: string }>;
+        }>;
+      }>;
+    };
+    expect(parsed.info.schema).toBe(
+      'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
+    );
+    expect(parsed.info.name).toBe('Login flow API Collection');
+    expect(parsed.variable).toEqual([
+      {
+        key: 'baseUrl',
+        value: 'https://example.test',
+        type: 'string',
+      },
+    ]);
+    expect(parsed.item[0]?.name).toBe('Submit login');
+    expect(parsed.item[0]?.item[0]?.name).toBe('POST /api/login');
+    expect(parsed.item[0]?.item[0]?.request.url).toBe('{{baseUrl}}/api/login');
+    expect(parsed.item[0]?.item[0]?.request.body?.options.raw.language).toBe('json');
+    expect(parsed.item[0]?.item[0]?.response[0]?.code).toBe(200);
+    expect(parsed.item[0]?.item[0]?.response[0]?.body).toContain('"token":"opaque"');
+    expect(parsed.item[0]?.item[0]?.response[0]?._postman_previewlanguage).toBe('json');
   });
 });

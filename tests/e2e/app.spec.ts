@@ -461,6 +461,12 @@ test.describe('desktop acceptance', () => {
     await expect(window.getByTestId('api-fixture-preview')).toContainText(
       '"urlTemplate": "/api/profile"',
     );
+    await expect(window.getByTestId('api-collection-preview')).toContainText(
+      '"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"',
+    );
+    await expect(window.getByTestId('api-collection-preview')).toContainText(
+      '"url": "{{baseUrl}}/api/profile"',
+    );
 
     await window.getByRole('button', { name: 'Export safe artifact bundle' }).click();
     const exportResult = window.getByTestId('artifact-export-result');

@@ -7,6 +7,7 @@ import {
   type RequestResponseCapture,
 } from '@browser-blackbox/domain';
 import {
+  generateApiCollection,
   generateApiRequestFixture,
   generatePlaywrightApiTest,
   generatePlaywrightUiTest,
@@ -117,6 +118,14 @@ export function App() {
     captures,
   });
   const generatedApiFixture = generateApiRequestFixture({
+    flowTitle:
+      recordingSession.present.steps[0]?.title
+        ? `${recordingSession.present.steps[0].title} flow`
+        : undefined,
+    steps: recordingSession.present.steps,
+    captures,
+  });
+  const generatedApiCollection = generateApiCollection({
     flowTitle:
       recordingSession.present.steps[0]?.title
         ? `${recordingSession.present.steps[0].title} flow`
@@ -844,6 +853,10 @@ export function App() {
                     <span className="status-label">Fixture file</span>
                     <span className="status-value">{generatedApiFixture.fileName}</span>
                   </p>
+                  <p className="status-row">
+                    <span className="status-label">Collection file</span>
+                    <span className="status-value">{generatedApiCollection.fileName}</span>
+                  </p>
                 </div>
                 {generatedApiTest.warnings.length > 0 ? (
                   <div className="checkpoint-list" data-testid="api-export-warnings">
@@ -869,6 +882,9 @@ export function App() {
                 </pre>
                 <pre className="network-body-text" data-testid="api-fixture-preview">
                   {generatedApiFixture.code}
+                </pre>
+                <pre className="network-body-text" data-testid="api-collection-preview">
+                  {generatedApiCollection.code}
                 </pre>
               </div>
 
