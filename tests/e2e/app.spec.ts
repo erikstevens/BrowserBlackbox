@@ -530,6 +530,15 @@ test.describe('desktop acceptance', () => {
     await window.getByRole('button', { name: 'Export with visible bodies' }).click();
 
     await expect(exportResult).toContainText('unsafe-unredacted');
+
+    await window.getByRole('button', { name: 'Reopen artifact bundle' }).click();
+    const reopenResult = window.getByTestId('artifact-reopen-result');
+    await expect(reopenResult).toContainText('reopened-artifact');
+    await expect(reopenResult).toContainText('1.0.0');
+    await expect(reopenResult).toContainText('No optional artifacts were missing');
+    await expect(window.getByTestId('ui-export-preview')).toContainText(
+      `await page.goto("${fixtureServer.origin}/");`,
+    );
   });
 
   test('shows retry metadata when a repeated request succeeds after a prior failure', async () => {

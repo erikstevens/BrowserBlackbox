@@ -1,4 +1,5 @@
 import type {
+  ArtifactBundleReadResult,
   ArtifactBundleExportResult,
   ArtifactExportSafetyAssessment,
   StoredRunSnapshot,
@@ -31,6 +32,7 @@ export type DesktopShellApi = {
   assessArtifactExport: (
     snapshot: StoredRunSnapshot,
   ) => Promise<ArtifactExportSafetyAssessment>;
+  reopenArtifactBundle: (rootDirectory: string) => Promise<ArtifactBundleReadResult>;
   exportArtifactBundle: (request: {
     snapshot: StoredRunSnapshot;
     mode: 'safe-redacted' | 'unsafe-unredacted';

@@ -16,6 +16,8 @@ const desktopShellApi: DesktopShellApi = {
     ipcRenderer.invoke('workspace:save-working-copy', snapshot),
   assessArtifactExport: (snapshot) =>
     ipcRenderer.invoke('workspace:assess-artifact-export', snapshot),
+  reopenArtifactBundle: (rootDirectory) =>
+    ipcRenderer.invoke('workspace:reopen-artifact-bundle', rootDirectory),
   exportArtifactBundle: (request) =>
     ipcRenderer.invoke('workspace:export-artifact-bundle', request),
   onBrowserRuntimeEvent: (listener) => {

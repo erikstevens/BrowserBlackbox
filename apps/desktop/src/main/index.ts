@@ -13,6 +13,7 @@ import {
 } from '@browser-blackbox/export';
 import { FileBackedSqliteStore } from '@browser-blackbox/persistence/src/file-store';
 import type {
+  ArtifactBundleReadResult,
   ArtifactBundleExportResult,
   ArtifactExportMode,
   ArtifactExportSafetyAssessment,
@@ -21,6 +22,7 @@ import type {
 import {
   assessArtifactExportSafety,
   prepareSnapshotForArtifactExport,
+  readArtifactBundle,
   writeArtifactBundle,
 } from '@browser-blackbox/persistence';
 import { createSqliteEngine } from '@browser-blackbox/persistence/src/sqlite';
@@ -227,6 +229,28 @@ function registerIpcHandlers(): void {
         assessment: prepared.assessment,
         mode: request.mode,
         rootDirectory: exportDirectory,
+      };
+    },
+  );
+
+  ipcMain.handle(
+    'workspace:reopen-artifact-bundle',
+    async (_event, rootDirectory: string): Promise<ArtifactBundleReadResult> => {
+      const bundle = await readArtifactBundle(rootDirectory);
+
+      return {
+        ...bundle,
+        snapshot: {
+          ...bundle.snapshot,
+          projection: {
+            projectionId: `projection-reopened-${bundle.snapshot.session.runId}`,
+            kind: 'reopened-artifact',
+            sourceBundlePath: rootDirectory,
+            sourceArtifactFormatVersion: bundle.manifest.artifactFormatVersion,
+            createdAt: bundle.snapshot.projection.createdAt,
+            updatedAt: new Date().toISOString(),
+          },
+        },
       };
     },
   );

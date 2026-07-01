@@ -21,6 +21,7 @@ import type {
   SimulationExportWarning,
 } from '@browser-blackbox/export';
 import type {
+  ArtifactBundleReadResult,
   ArtifactBundleExportResult,
   ArtifactExportMode,
 } from '@browser-blackbox/persistence/src/contracts';
@@ -114,6 +115,9 @@ export function App() {
   const [pendingExportMode, setPendingExportMode] = useState<ArtifactExportMode | null>(null);
   const [lastArtifactExport, setLastArtifactExport] =
     useState<ArtifactBundleExportResult | null>(null);
+  const [artifactReopenPath, setArtifactReopenPath] = useState('');
+  const [lastReopenedArtifact, setLastReopenedArtifact] =
+    useState<(ArtifactBundleReadResult & { rootDirectory: string }) | null>(null);
   const selectedRecordedStep = getSelectedRecordedStep(recordingSession);
   const relatedCaptures =
     currentInspection === null
@@ -423,10 +427,42 @@ export function App() {
         mode,
       });
       setLastArtifactExport(result);
+      setArtifactReopenPath(result.rootDirectory);
       setAcknowledgeVisibleBodyExport(false);
     } finally {
       setPendingExportMode(null);
     }
+  }
+
+  async function reopenArtifactBundle(): Promise<void> {
+    if (artifactReopenPath.trim().length === 0) {
+      return;
+    }
+
+    if (browserRuntime.phase !== 'idle') {
+      try {
+        const stopped = await window.desktopShell.stopBrowserSession();
+        setBrowserRuntime(stopped.state);
+      } catch {
+        // Keep the reopen flow visible even if session teardown fails.
+      }
+    }
+
+    const result = await window.desktopShell.reopenArtifactBundle(artifactReopenPath.trim());
+    hydrateWorkingCopySnapshot(result.snapshot);
+    setLastReopenedArtifact({
+      ...result,
+      rootDirectory: artifactReopenPath.trim(),
+    });
+    setBrowserRuntime({
+      phase: 'idle',
+      targetUrl: null,
+      pageUrl: null,
+      sessionId: null,
+      playwrightAttached: false,
+      cdpAttached: false,
+      lastError: null,
+    });
   }
 
   function createRedactionRule(): void {
@@ -1111,6 +1147,72 @@ export function App() {
                     </p>
                   </div>
                 ) : null}
+                <div className="checkpoint-list" data-testid="artifact-reopen-panel">
+                  <label className="field-label" htmlFor="artifact-reopen-path">
+                    Artifact bundle path
+                  </label>
+                  <input
+                    id="artifact-reopen-path"
+                    className="url-input"
+                    value={artifactReopenPath}
+                    onChange={(event) => setArtifactReopenPath(event.target.value)}
+                  />
+                  <div className="button-row">
+                    <button
+                      className="button button-secondary"
+                      disabled={artifactReopenPath.trim().length === 0}
+                      onClick={() => void reopenArtifactBundle()}
+                      type="button"
+                    >
+                      Reopen artifact bundle
+                    </button>
+                  </div>
+                  {lastReopenedArtifact ? (
+                    <div className="runtime-status" data-testid="artifact-reopen-result">
+                      <p className="status-row">
+                        <span className="status-label">Projection</span>
+                        <span className="status-value">
+                          {lastReopenedArtifact.snapshot.projection.kind}
+                        </span>
+                      </p>
+                      <p className="status-row">
+                        <span className="status-label">Artifact format</span>
+                        <span className="status-value">
+                          {lastReopenedArtifact.manifest.artifactFormatVersion}
+                        </span>
+                      </p>
+                      <p className="status-row">
+                        <span className="status-label">Source bundle</span>
+                        <span className="status-value">{lastReopenedArtifact.rootDirectory}</span>
+                      </p>
+                      <p className="status-row">
+                        <span className="status-label">Missing optional</span>
+                        <span className="status-value">
+                          {lastReopenedArtifact.missingOptionalArtifacts.length}
+                        </span>
+                      </p>
+                      {lastReopenedArtifact.missingOptionalArtifacts.length > 0 ? (
+                        <div className="checkpoint-list">
+                          {lastReopenedArtifact.missingOptionalArtifacts.map((artifactPath) => (
+                            <div className="step-review-card" key={artifactPath}>
+                              <div className="step-review-header">
+                                <span className="step-index">optional-missing</span>
+                                <span className="status-value">{artifactPath}</span>
+                              </div>
+                              <p className="inspection-reason">
+                                Reopen degraded gracefully because this artifact is optional.
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="inspection-reason">
+                          No optional artifacts were missing from the reopened bundle.
+                        </p>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
           </article>
