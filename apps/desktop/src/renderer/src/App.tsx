@@ -7,6 +7,7 @@ import {
   type RedactionRule,
   type RequestResponseCapture,
   type SimulationRule,
+  type TimelineEvent,
 } from '@browser-blackbox/domain';
 import {
   generateApiCollection,
@@ -115,6 +116,7 @@ export function App() {
   const [pendingExportMode, setPendingExportMode] = useState<ArtifactExportMode | null>(null);
   const [lastArtifactExport, setLastArtifactExport] =
     useState<ArtifactBundleExportResult | null>(null);
+  const [timelineFilter, setTimelineFilter] = useState<'all' | TimelineKindFilter>('all');
   const [artifactReopenPath, setArtifactReopenPath] = useState('');
   const [lastReopenedArtifact, setLastReopenedArtifact] =
     useState<(ArtifactBundleReadResult & { rootDirectory: string }) | null>(null);
@@ -177,6 +179,10 @@ export function App() {
   const appliedSimulationTimeline = timeline.filter(
     (entry) => entry.kind === 'simulation-rule',
   );
+  const filteredTimeline =
+    timelineFilter === 'all'
+      ? timeline
+      : timeline.filter((entry) => matchesTimelineFilter(entry, timelineFilter));
 
   useEffect(() => {
     void window.desktopShell
@@ -480,6 +486,17 @@ export function App() {
       }),
     );
     setNewRuleTarget('');
+  }
+
+  function handleTimelineEntrySelection(entry: typeof timeline[number]): void {
+    if (entry.kind === 'request') {
+      setSelectedCaptureId(entry.requestId);
+      return;
+    }
+
+    if ('stepId' in entry && entry.stepId) {
+      selectRecordedStep(entry.stepId);
+    }
   }
 
   return (
@@ -1842,6 +1859,85 @@ export function App() {
           <article className="panel full-width-panel">
             <div className="panel-header">
               <div>
+                <p className="section-label">Unified timeline</p>
+                <p className="panel-copy">
+                  Review user actions, navigation, requests, assertions, timeouts,
+                  console issues, checkpoints, and applied rules in one canonical lane.
+                </p>
+              </div>
+              <div className="recording-toolbar">
+                <select
+                  aria-label="Timeline filter"
+                  className="select-input"
+                  value={timelineFilter}
+                  onChange={(event) =>
+                    setTimelineFilter(event.target.value as 'all' | TimelineKindFilter)
+                  }
+                >
+                  <option value="all">all</option>
+                  <option value="flow">flow</option>
+                  <option value="request">request</option>
+                  <option value="assertion">assertion</option>
+                  <option value="issue">issue</option>
+                  <option value="checkpoint">checkpoint</option>
+                  <option value="simulation">simulation</option>
+                </select>
+              </div>
+            </div>
+            <div className="runtime-status">
+              <p className="status-row">
+                <span className="status-label">Visible events</span>
+                <span className="status-value">{filteredTimeline.length}</span>
+              </p>
+              <p className="status-row">
+                <span className="status-label">Filter</span>
+                <span className="status-value">{timelineFilter}</span>
+              </p>
+            </div>
+            <div className="checkpoint-list" data-testid="timeline-panel">
+              {filteredTimeline.length === 0 ? (
+                <p className="empty-state">
+                  No timeline events match the current filter.
+                </p>
+              ) : (
+                filteredTimeline.map((entry) => (
+                  <button
+                    key={entry.id}
+                    className="step-review-card"
+                    onClick={() => handleTimelineEntrySelection(entry)}
+                    type="button"
+                  >
+                    <div className="step-review-header">
+                      <span className="step-index">{entry.kind}</span>
+                      <span className={`status-value ${timelineEntryStatusClassName(entry)}`}>
+                        {describeTimelineEntryBadge(entry)}
+                      </span>
+                    </div>
+                    <p className="step-summary">{entry.summary}</p>
+                    <div className="step-review-tags">
+                      <span className="review-tag">{formatTimestamp(entry.timestamp)}</span>
+                      {'stepId' in entry && entry.stepId ? (
+                        <span className="review-tag">{entry.stepId}</span>
+                      ) : null}
+                      {entry.kind === 'request' ? (
+                        <span className="review-tag">{entry.requestId}</span>
+                      ) : null}
+                      {entry.kind === 'simulation-rule' ? (
+                        <span className="review-tag">{entry.ruleId}</span>
+                      ) : null}
+                      {entry.kind === 'checkpoint' ? (
+                        <span className="review-tag">{entry.checkpointId}</span>
+                      ) : null}
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </article>
+
+          <article className="panel full-width-panel">
+            <div className="panel-header">
+              <div>
                 <p className="section-label">Replay recovery</p>
                 <p className="panel-copy">
                   Preview the recovery path for the current working copy before
@@ -2021,6 +2117,10 @@ export function App() {
 
           <article className="panel full-width-panel">
             <p className="section-label">Runtime event stream</p>
+            <p className="panel-copy">
+              Low-level runtime and CDP diagnostics remain available here for transport-level
+              debugging. The primary workflow-oriented timeline is shown above.
+            </p>
             <div className="event-stream">
               {runtimeEvents.length === 0 ? (
                 <p className="empty-state">
@@ -2104,6 +2204,79 @@ function formatTimestamp(timestamp: string): string {
 
 function formatBoolean(value: boolean): string {
   return value ? 'yes' : 'no';
+}
+
+type TimelineKindFilter =
+  | 'flow'
+  | 'request'
+  | 'assertion'
+  | 'issue'
+  | 'checkpoint'
+  | 'simulation';
+
+type AppTimelineEntry = TimelineEvent;
+
+function matchesTimelineFilter(
+  entry: AppTimelineEntry,
+  filter: TimelineKindFilter,
+): boolean {
+  switch (filter) {
+    case 'flow':
+      return entry.kind === 'user-action' || entry.kind === 'navigation' || entry.kind === 'retry';
+    case 'request':
+      return entry.kind === 'request';
+    case 'assertion':
+      return entry.kind === 'assertion';
+    case 'issue':
+      return entry.kind === 'console' || entry.kind === 'exception' || entry.kind === 'timeout';
+    case 'checkpoint':
+      return entry.kind === 'checkpoint';
+    case 'simulation':
+      return entry.kind === 'simulation-rule';
+  }
+}
+
+function describeTimelineEntryBadge(entry: AppTimelineEntry): string {
+  switch (entry.kind) {
+    case 'assertion':
+      return entry.outcome;
+    case 'console':
+    case 'exception':
+      return entry.severity;
+    case 'checkpoint':
+      return entry.status;
+    case 'simulation-rule':
+      return 'applied';
+    case 'request':
+      return 'captured';
+    case 'timeout':
+      return 'timeout';
+    case 'navigation':
+      return 'navigation';
+    case 'user-action':
+      return 'action';
+    case 'retry':
+      return 'retry';
+    case 'screenshot':
+      return 'screenshot';
+  }
+}
+
+function timelineEntryStatusClassName(entry: AppTimelineEntry): string {
+  switch (entry.kind) {
+    case 'assertion':
+      return entry.outcome === 'passed' ? 'status-running' : 'status-error';
+    case 'console':
+    case 'exception':
+    case 'timeout':
+      return 'status-error';
+    case 'checkpoint':
+      return entry.status === 'created' || entry.status === 'reused'
+        ? 'status-running'
+        : 'status-launching';
+    default:
+      return 'status-idle';
+  }
 }
 
 function describeRecordedStep(step: RecordedStep): string {

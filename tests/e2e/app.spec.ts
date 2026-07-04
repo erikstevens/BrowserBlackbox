@@ -143,6 +143,9 @@ test.describe('desktop acceptance', () => {
     await expect(window.getByTestId('simulation-activity-panel')).toContainText(
       'Applied simulation rule Block home route',
     );
+    await expect(window.getByTestId('timeline-panel')).toContainText(
+      'Applied simulation rule Block home route',
+    );
   });
 
   test('runs persistent inspect mode with hover overlay and selected metadata', async () => {
@@ -562,6 +565,10 @@ test.describe('desktop acceptance', () => {
     await expect(window.locator('.event-stream')).toContainText(
       `GET ${fixtureServer.origin}/api/retry`,
     );
+    const timelinePanel = window.getByTestId('timeline-panel');
+    await expect(timelinePanel).toContainText(`GET ${fixtureServer.origin}/api/retry`);
+    await window.getByLabel('Timeline filter').selectOption('request');
+    await timelinePanel.getByRole('button', { name: /GET .*\/api\/retry/i }).last().click();
 
     const networkPanel = window.getByTestId('network-capture-panel');
     await expect(networkPanel).toContainText(`${fixtureServer.origin}/api/retry`);
