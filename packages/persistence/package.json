@@ -6,6 +6,7 @@
   "main": "./src/index.ts",
   "dependencies": {
     "@browser-blackbox/domain": "0.1.0",
+    "@browser-blackbox/shared": "0.1.0",
     "sql.js": "^1.13.0"
   }
 }

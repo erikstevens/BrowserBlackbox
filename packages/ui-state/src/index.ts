@@ -29,6 +29,10 @@ import type {
   BrowserRuntimeUpdate,
 } from '@browser-blackbox/runtime-browser';
 import {
+  createDefaultProjectSettings,
+  type ProjectSettings,
+} from '@browser-blackbox/shared';
+import {
   canRedoRecordingSession,
   canUndoRecordingSession,
   createRecordingSession,
@@ -57,7 +61,13 @@ import {
   type WorkspaceWorkingCopyMetadata,
 } from './workspace-persistence';
 
-type CaptureTemplate = 'reload' | 'url-assertion';
+type CaptureTemplate =
+  | 'reload'
+  | 'assert-visible'
+  | 'assert-hidden'
+  | 'assert-enabled'
+  | 'assert-text'
+  | 'url-assertion';
 
 type WorkspaceState = {
   targetUrl: string;
@@ -65,6 +75,7 @@ type WorkspaceState = {
   runtimeHealth: BrowserRuntimeHealth;
   runtimeEvents: BrowserRuntimeEvent[];
   currentInspection: InspectionMetadata | null;
+  projectSettings: ProjectSettings;
   captures: RequestResponseCapture[];
   redactionRules: RedactionRule[];
   simulationRules: SimulationRule[];
@@ -75,11 +86,13 @@ type WorkspaceState = {
   replayPlan: ReplayPlan | null;
   setTargetUrl: (targetUrl: string) => void;
   setBrowserRuntime: (browserRuntime: BrowserRuntimeState) => void;
+  setProjectSettings: (projectSettings: ProjectSettings) => void;
   setRuntimeDiagnostics: (diagnostics: BrowserRuntimeDiagnostics) => void;
   pushRuntimeUpdate: (update: BrowserRuntimeUpdate) => void;
   selectRecordedStep: (stepId: string) => void;
   replaceRecordedStepInReview: (stepId: string, step: RecordedStep) => void;
   insertStepAfterSelection: (template: CaptureTemplate) => void;
+  insertAuthoredStepAfterSelection: (step: RecordedStep) => void;
   moveRecordedStep: (stepId: string, direction: 'up' | 'down') => void;
   disableRecordedStepInReview: (stepId: string) => void;
   removeRecordedStepFromReview: (stepId: string) => void;
@@ -129,6 +142,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
     },
     runtimeEvents: [],
     currentInspection: null,
+    projectSettings: createDefaultProjectSettings(),
     captures: [],
     redactionRules: [],
     simulationRules: [],
@@ -141,6 +155,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
     replayPlan: null,
     setTargetUrl: (targetUrl) => useWorkspaceStore.setState({ targetUrl }),
     setBrowserRuntime: (browserRuntime) => useWorkspaceStore.setState({ browserRuntime }),
+    setProjectSettings: (projectSettings) => useWorkspaceStore.setState({ projectSettings }),
     setRuntimeDiagnostics: (diagnostics) =>
       useWorkspaceStore.setState((state) => {
         const evidence = buildEvidenceFromRuntimeEvents(diagnostics.recentEvents);
@@ -223,6 +238,37 @@ export function createInitialWorkspaceState(): WorkspaceState {
           recordingSession: insertRecordingStep(state.recordingSession, {
             index: anchorIndex + 1,
             step: nextStep,
+          }),
+        };
+      }),
+    insertAuthoredStepAfterSelection: (step) =>
+      useWorkspaceStore.setState((state) => {
+        const selectedStepId = state.recordingSession.selectedStepId;
+        const selectedIndex = state.recordingSession.present.steps.findIndex(
+          (entry) => entry.id === selectedStepId,
+        );
+        const anchorIndex =
+          selectedIndex === -1
+            ? state.recordingSession.present.steps.length - 1
+            : selectedIndex;
+        const anchorStep =
+          state.recordingSession.present.steps[anchorIndex] ??
+          state.recordingSession.present.steps[
+            state.recordingSession.present.steps.length - 1
+          ];
+
+        return {
+          recordingSession: insertRecordingStep(state.recordingSession, {
+            index: anchorIndex + 1,
+            step: {
+              ...step,
+              dependencyStepIds:
+                step.dependencyStepIds.length > 0
+                  ? step.dependencyStepIds
+                  : anchorStep
+                    ? [anchorStep.id]
+                    : [],
+            },
           }),
         };
       }),
@@ -324,6 +370,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
         return {
           ...state,
           targetUrl: hydrated.targetUrl,
+          projectSettings: hydrated.projectSettings,
           workingCopy: hydrated.metadata,
           captures: hydrated.captures,
           redactionRules: hydrated.redactionRules,
@@ -346,6 +393,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
         browserRuntime: useWorkspaceStore.getState().browserRuntime,
         recordingSession: useWorkspaceStore.getState().recordingSession,
         workingCopy: useWorkspaceStore.getState().workingCopy,
+        projectSettings: useWorkspaceStore.getState().projectSettings,
         captures: useWorkspaceStore.getState().captures,
         redactionRules: useWorkspaceStore.getState().redactionRules,
         simulationRules: useWorkspaceStore.getState().simulationRules,
@@ -608,6 +656,9 @@ function createInsertedStep(
 ): RecordedStep {
   const timestamp = new Date().toISOString();
   const dependencyStepIds = anchorStep ? [anchorStep.id] : [];
+  const selector =
+    getRecordedStepSelector(anchorStep ?? null) ??
+    'page.getByRole("heading", { name: "Dashboard" })';
 
   if (template === 'reload') {
     return createActionStep({
@@ -621,17 +672,68 @@ function createInsertedStep(
     });
   }
 
-  return {
-    ...recordedStepFixture,
+  if (template === 'assert-visible') {
+    return createAssertionStep({
+      id: `step-assert-visible-${timestamp}`,
+      title: 'Assert element visible',
+      createdAt: timestamp,
+      dependencyStepIds,
+      assertion: {
+        schemaVersion: domainVersions.domainSchemaVersion,
+        kind: 'element-visible',
+        selector,
+      },
+    });
+  }
+
+  if (template === 'assert-hidden') {
+    return createAssertionStep({
+      id: `step-assert-hidden-${timestamp}`,
+      title: 'Assert element hidden',
+      createdAt: timestamp,
+      dependencyStepIds,
+      assertion: {
+        schemaVersion: domainVersions.domainSchemaVersion,
+        kind: 'element-hidden',
+        selector,
+      },
+    });
+  }
+
+  if (template === 'assert-enabled') {
+    return createAssertionStep({
+      id: `step-assert-enabled-${timestamp}`,
+      title: 'Assert element enabled',
+      createdAt: timestamp,
+      dependencyStepIds,
+      assertion: {
+        schemaVersion: domainVersions.domainSchemaVersion,
+        kind: 'element-enabled',
+        selector,
+      },
+    });
+  }
+
+  if (template === 'assert-text') {
+    return createAssertionStep({
+      id: `step-assert-text-${timestamp}`,
+      title: 'Assert element text',
+      createdAt: timestamp,
+      dependencyStepIds,
+      assertion: {
+        schemaVersion: domainVersions.domainSchemaVersion,
+        kind: 'element-contains-text',
+        selector,
+        expectedText: 'Expected text',
+      },
+    });
+  }
+
+  return createAssertionStep({
     id: `step-assert-url-${timestamp}`,
     title: 'Assert current URL',
-    kind: 'assertion',
-    status: 'active',
-    evidenceState: 'current',
     createdAt: timestamp,
-    updatedAt: timestamp,
     dependencyStepIds,
-    invalidatesEvidenceAfter: true,
     assertion: {
       schemaVersion: domainVersions.domainSchemaVersion,
       kind: 'url-matches',
@@ -643,6 +745,28 @@ function createInsertedStep(
           : 'https://example.test/dashboard',
       matchMode: 'exact',
     },
+  });
+}
+
+function createAssertionStep(input: {
+  id: string;
+  title: string;
+  createdAt: string;
+  dependencyStepIds?: string[];
+  assertion: AssertionStep['assertion'];
+}): RecordedStep {
+  return {
+    ...recordedStepFixture,
+    id: input.id,
+    title: input.title,
+    kind: 'assertion',
+    status: 'active',
+    evidenceState: 'current',
+    createdAt: input.createdAt,
+    updatedAt: input.createdAt,
+    dependencyStepIds: input.dependencyStepIds ?? [],
+    invalidatesEvidenceAfter: true,
+    assertion: input.assertion,
   };
 }
 
@@ -716,7 +840,11 @@ function enrichInspectionWithRelatedRequests(
   };
 }
 
-function getRecordedStepSelector(step: RecordedStep): string | null {
+function getRecordedStepSelector(step: RecordedStep | null): string | null {
+  if (!step) {
+    return null;
+  }
+
   if (step.kind === 'action') {
     switch (step.action.type) {
       case 'click':

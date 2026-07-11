@@ -10,6 +10,7 @@ import {
   simulationRuleFixture,
   timelineEventFixture,
 } from '@browser-blackbox/domain';
+import { createDefaultProjectSettings } from '@browser-blackbox/shared';
 import type { StoredRunSnapshot } from './contracts';
 
 export const storedRunSnapshotFixture: StoredRunSnapshot = {
@@ -34,6 +35,7 @@ export const storedRunSnapshotFixture: StoredRunSnapshot = {
     createdAt: '2026-06-24T15:00:10.000Z',
   },
   manifest: artifactManifestFixture,
+  projectSettings: createDefaultProjectSettings(),
   steps: [
     {
       ...recordedStepFixture,

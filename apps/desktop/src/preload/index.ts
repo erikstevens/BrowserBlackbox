@@ -9,6 +9,7 @@ const desktopShellApi: DesktopShellApi = {
   launchBrowserSession: (request) => ipcRenderer.invoke('browser-runtime:launch', request),
   runReplay: (request) => ipcRenderer.invoke('browser-runtime:replay', request),
   setInspectionMode: (enabled) => ipcRenderer.invoke('browser-runtime:set-inspection-mode', enabled),
+  setCapturePolicy: (policy) => ipcRenderer.invoke('browser-runtime:set-capture-policy', policy),
   setRedactionRules: (rules) => ipcRenderer.invoke('browser-runtime:set-redaction-rules', rules),
   stopBrowserSession: () => ipcRenderer.invoke('browser-runtime:stop'),
   loadWorkingCopySnapshot: () => ipcRenderer.invoke('workspace:load-working-copy'),

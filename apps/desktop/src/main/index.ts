@@ -27,6 +27,10 @@ import {
 } from '@browser-blackbox/persistence';
 import { createSqliteEngine } from '@browser-blackbox/persistence/src/sqlite';
 import { BrowserSessionManager } from '@browser-blackbox/runtime-browser';
+import {
+  createDefaultProjectSettings,
+  type ProjectCapturePolicy,
+} from '@browser-blackbox/shared';
 import type {
   BrowserRuntimeDiagnostics,
   BrowserRuntimeEvent,
@@ -171,6 +175,13 @@ function registerIpcHandlers(): void {
         },
       });
       return inspectionModeEnabled;
+    },
+  );
+
+  ipcMain.handle(
+    'browser-runtime:set-capture-policy',
+    async (_event, policy: Partial<ProjectCapturePolicy>): Promise<void> => {
+      browserSessionManager.setCapturePolicy(normalizeCapturePolicy(policy));
     },
   );
 
@@ -679,6 +690,39 @@ function createExportArtifactSnapshot(snapshot: StoredRunSnapshot): StoredRunSna
         },
       ],
     },
+  };
+}
+
+function normalizeCapturePolicy(
+  policy: Partial<ProjectCapturePolicy> | null | undefined,
+): ProjectCapturePolicy {
+  const defaults = createDefaultProjectSettings().capturePolicy;
+
+  return {
+    captureRequestBodies:
+      typeof policy?.captureRequestBodies === 'boolean'
+        ? policy.captureRequestBodies
+        : defaults.captureRequestBodies,
+    captureResponseBodies:
+      typeof policy?.captureResponseBodies === 'boolean'
+        ? policy.captureResponseBodies
+        : defaults.captureResponseBodies,
+    responseBodyCaptureMode:
+      policy?.responseBodyCaptureMode === 'full-with-warning'
+        ? 'full-with-warning'
+        : 'safe-default',
+    responseBodySizeLimitBytes:
+      typeof policy?.responseBodySizeLimitBytes === 'number' &&
+      Number.isInteger(policy.responseBodySizeLimitBytes) &&
+      policy.responseBodySizeLimitBytes > 0
+        ? policy.responseBodySizeLimitBytes
+        : defaults.responseBodySizeLimitBytes,
+    sensitiveEndpointPatterns: Array.isArray(policy?.sensitiveEndpointPatterns)
+      ? [...new Set(policy.sensitiveEndpointPatterns
+          .filter((entry): entry is string => typeof entry === 'string')
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0))]
+      : defaults.sensitiveEndpointPatterns,
   };
 }
 

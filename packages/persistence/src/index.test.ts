@@ -160,6 +160,29 @@ describe('snapshot envelope serialization', () => {
     expect(envelope.snapshot).toEqual(storedRunSnapshotFixture);
   });
 
+  it('hydrates default project settings when older snapshots omit them', () => {
+    const serialized = JSON.stringify({
+      envelopeVersion: '1.0.0',
+      exportedAt: '2026-07-10T21:00:00.000Z',
+      snapshot: {
+        ...storedRunSnapshotFixture,
+        projectSettings: undefined,
+      },
+    });
+
+    const envelope = deserializeSnapshotEnvelope(serialized);
+
+    expect(envelope.snapshot.projectSettings).toMatchObject({
+      capturePolicy: {
+        captureRequestBodies: true,
+        captureResponseBodies: true,
+        responseBodyCaptureMode: 'safe-default',
+        responseBodySizeLimitBytes: 262144,
+        sensitiveEndpointPatterns: [],
+      },
+    });
+  });
+
   it('rejects malformed snapshot envelopes', () => {
     expect(() =>
       deserializeSnapshotEnvelope(

@@ -11,6 +11,7 @@ import {
 } from '@browser-blackbox/domain';
 import type { StoredRunSnapshot } from '@browser-blackbox/persistence/src/contracts';
 import type { BrowserRuntimeState } from '@browser-blackbox/runtime-browser';
+import type { ProjectSettings } from '@browser-blackbox/shared';
 import type { RecordingSession } from './recording-session';
 
 export type WorkspaceWorkingCopyMetadata = {
@@ -27,6 +28,7 @@ export type WorkspacePersistenceState = {
   browserRuntime: BrowserRuntimeState;
   recordingSession: RecordingSession;
   workingCopy: WorkspaceWorkingCopyMetadata;
+  projectSettings: ProjectSettings;
   captures: RequestResponseCapture[];
   redactionRules: RedactionRule[];
   simulationRules: SimulationRule[];
@@ -87,6 +89,7 @@ export function createStoredRunSnapshotFromWorkspace(
       createdAt: metadata.createdAt,
     },
     manifest,
+    projectSettings: state.projectSettings,
     steps: state.recordingSession.present.steps,
     captures: state.captures,
     redactionRules: state.redactionRules,
@@ -100,6 +103,7 @@ export function createStoredRunSnapshotFromWorkspace(
 export function hydrateWorkspaceFromStoredRunSnapshot(snapshot: StoredRunSnapshot): {
   metadata: WorkspaceWorkingCopyMetadata;
   targetUrl: string;
+  projectSettings: ProjectSettings;
   steps: RecordedStep[];
   captures: RequestResponseCapture[];
   redactionRules: RedactionRule[];
@@ -118,6 +122,7 @@ export function hydrateWorkspaceFromStoredRunSnapshot(snapshot: StoredRunSnapsho
       updatedAt: snapshot.projection.updatedAt,
     },
     targetUrl: snapshot.session.targetUrl,
+    projectSettings: snapshot.projectSettings,
     steps: snapshot.steps,
     captures: snapshot.captures,
     redactionRules: snapshot.redactionRules,

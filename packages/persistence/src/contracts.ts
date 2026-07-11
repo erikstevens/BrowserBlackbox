@@ -8,6 +8,7 @@ import type {
   SimulationRule,
   TimelineEvent,
 } from '@browser-blackbox/domain';
+import type { ProjectSettings } from '@browser-blackbox/shared';
 
 export type StoredRunProjection = {
   projectionId: string;
@@ -35,6 +36,7 @@ export type StoredRunSnapshot = {
     createdAt: string;
   };
   manifest: ArtifactManifest;
+  projectSettings: ProjectSettings;
   steps: RecordedStep[];
   captures: RequestResponseCapture[];
   redactionRules: RedactionRule[];

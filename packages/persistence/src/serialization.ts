@@ -10,6 +10,11 @@ import {
   parseTimelineEvent,
 } from '@browser-blackbox/domain';
 import { DomainValidationError } from '@browser-blackbox/domain';
+import {
+  createDefaultProjectSettings,
+  DEFAULT_RESPONSE_BODY_CAPTURE_LIMIT_BYTES,
+  type ProjectSettings,
+} from '@browser-blackbox/shared';
 import type { StoredRunSnapshot, StoredRunSnapshotEnvelope } from './contracts';
 
 type UnknownRecord = Record<string, unknown>;
@@ -24,6 +29,78 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isIsoTimestamp(value: unknown): value is string {
   return isNonEmptyString(value) && !Number.isNaN(Date.parse(value));
+}
+
+function parseProjectSettings(value: unknown): ProjectSettings {
+  if (value === undefined) {
+    return createDefaultProjectSettings();
+  }
+
+  if (!isRecord(value) || !isRecord(value.capturePolicy)) {
+    throw new DomainValidationError('ProjectSettings', [
+      'projectSettings.capturePolicy must be an object',
+    ]);
+  }
+
+  const capturePolicy = value.capturePolicy as UnknownRecord;
+  const issues: string[] = [];
+
+  if (typeof capturePolicy.captureRequestBodies !== 'boolean') {
+    issues.push('projectSettings.capturePolicy.captureRequestBodies must be a boolean');
+  }
+  if (typeof capturePolicy.captureResponseBodies !== 'boolean') {
+    issues.push('projectSettings.capturePolicy.captureResponseBodies must be a boolean');
+  }
+  if (
+    capturePolicy.responseBodyCaptureMode !== 'safe-default' &&
+    capturePolicy.responseBodyCaptureMode !== 'full-with-warning'
+  ) {
+    issues.push(
+      'projectSettings.capturePolicy.responseBodyCaptureMode must be safe-default or full-with-warning',
+    );
+  }
+  if (
+    typeof capturePolicy.responseBodySizeLimitBytes !== 'number' ||
+    !Number.isInteger(capturePolicy.responseBodySizeLimitBytes) ||
+    capturePolicy.responseBodySizeLimitBytes <= 0
+  ) {
+    issues.push(
+      'projectSettings.capturePolicy.responseBodySizeLimitBytes must be a positive integer',
+    );
+  }
+  if (
+    capturePolicy.sensitiveEndpointPatterns !== undefined &&
+    (!Array.isArray(capturePolicy.sensitiveEndpointPatterns) ||
+      !capturePolicy.sensitiveEndpointPatterns.every(
+        (entry) => typeof entry === 'string' && entry.trim().length > 0,
+      ))
+  ) {
+    issues.push(
+      'projectSettings.capturePolicy.sensitiveEndpointPatterns must be a non-empty string array when provided',
+    );
+  }
+
+  if (issues.length > 0) {
+    throw new DomainValidationError('ProjectSettings', issues);
+  }
+
+  return {
+    capturePolicy: {
+      captureRequestBodies: capturePolicy.captureRequestBodies as boolean,
+      captureResponseBodies: capturePolicy.captureResponseBodies as boolean,
+      responseBodyCaptureMode: capturePolicy.responseBodyCaptureMode as ProjectSettings['capturePolicy']['responseBodyCaptureMode'],
+      responseBodySizeLimitBytes:
+        (capturePolicy.responseBodySizeLimitBytes as number) ??
+        DEFAULT_RESPONSE_BODY_CAPTURE_LIMIT_BYTES,
+      sensitiveEndpointPatterns: [
+        ...new Set(
+          Array.isArray(capturePolicy.sensitiveEndpointPatterns)
+            ? capturePolicy.sensitiveEndpointPatterns.map((entry) => entry.trim())
+            : [],
+        ),
+      ],
+    },
+  };
 }
 
 export function serializeSnapshotEnvelope(snapshot: StoredRunSnapshot): string {
@@ -239,6 +316,7 @@ export function parseStoredRunSnapshot(value: unknown): StoredRunSnapshot {
       createdAt: String(flow.createdAt),
     },
     manifest: parseArtifactManifest(value.manifest),
+    projectSettings: parseProjectSettings(value.projectSettings),
     steps: (value.steps as unknown[]).map((entry) => parseRecordedStep(entry)),
     captures: (value.captures as unknown[]).map((entry) => parseRequestResponseCapture(entry)),
     redactionRules: (value.redactionRules as unknown[]).map((entry) => parseRedactionRule(entry)),

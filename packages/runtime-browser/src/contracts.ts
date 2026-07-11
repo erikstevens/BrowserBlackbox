@@ -5,6 +5,7 @@ import type {
   RedactionRule,
   SimulationRule,
 } from '@browser-blackbox/domain';
+import type { ProjectCapturePolicy } from '@browser-blackbox/shared';
 
 export type BrowserRuntimePhase =
   | 'idle'
@@ -16,6 +17,7 @@ export type BrowserRuntimePhase =
 export type BrowserLaunchRequest = {
   targetUrl: string;
   redactionRules?: RedactionRule[];
+  capturePolicy?: ProjectCapturePolicy;
 };
 
 export type BrowserRuntimeState = {
@@ -53,6 +55,7 @@ export type BrowserReplayRequest = {
   plan: BrowserReplayPlan;
   redactionRules?: RedactionRule[];
   simulationRules?: SimulationRule[];
+  capturePolicy?: ProjectCapturePolicy;
 };
 
 export type BrowserReplayCommandResult = BrowserRuntimeCommandResult & {

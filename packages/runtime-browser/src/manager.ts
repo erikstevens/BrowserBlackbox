@@ -9,6 +9,11 @@ import type {
   RedactionRule,
   SimulationRule,
 } from '@browser-blackbox/domain';
+import {
+  createDefaultProjectSettings,
+  isSensitiveEndpointUrl,
+  type ProjectCapturePolicy,
+} from '@browser-blackbox/shared';
 import { chromium } from 'playwright';
 import type {
   BrowserLaunchRequest,
@@ -162,6 +167,8 @@ export class BrowserSessionManager {
   private state: BrowserRuntimeState = DEFAULT_STATE;
   private activeRedactionRules: RedactionRule[] = [];
   private activeSimulationRules: SimulationRule[] = [];
+  private activeCapturePolicy: ProjectCapturePolicy =
+    createDefaultProjectSettings().capturePolicy;
   private replayRouteHandler: ((route: ConnectedRoute) => Promise<void>) | null = null;
   private currentReplayStepId: string | null = null;
 
@@ -191,6 +198,10 @@ export class BrowserSessionManager {
     this.activeRedactionRules = [...rules];
   }
 
+  setCapturePolicy(policy: ProjectCapturePolicy): void {
+    this.activeCapturePolicy = { ...policy };
+  }
+
   async launch(request: BrowserLaunchRequest): Promise<BrowserRuntimeCommandResult> {
     const targetUrl = request.targetUrl.trim();
 
@@ -216,6 +227,9 @@ export class BrowserSessionManager {
 
     await this.stop();
     this.activeRedactionRules = [...(request.redactionRules ?? [])];
+    this.activeCapturePolicy = {
+      ...(request.capturePolicy ?? this.activeCapturePolicy),
+    };
     this.state = {
       phase: 'launching',
       targetUrl: parsedUrl.toString(),
@@ -355,6 +369,9 @@ export class BrowserSessionManager {
   ): Promise<BrowserReplayCommandResult> {
     this.activeRedactionRules = [...(request.redactionRules ?? this.activeRedactionRules)];
     this.activeSimulationRules = [...(request.simulationRules ?? [])];
+    this.activeCapturePolicy = {
+      ...(request.capturePolicy ?? this.activeCapturePolicy),
+    };
     if (this.state.phase !== 'running' || this.page === null) {
       throw new Error('A managed browser session must be running before replay can execute.');
     }
@@ -620,6 +637,7 @@ export class BrowserSessionManager {
       const requestBody = captureRequestBody(
         request,
         requestContentType,
+        this.activeCapturePolicy,
         this.activeRedactionRules,
       );
       const redactedRequestUrl = redactUrlByRules(requestUrl, this.activeRedactionRules);
@@ -1298,6 +1316,7 @@ export class BrowserSessionManager {
         requestRecord.responseContentType,
         false,
         responseUrl,
+        this.activeCapturePolicy,
         this.activeRedactionRules,
       );
       this.requestMap.set(requestId, {
@@ -1561,18 +1580,6 @@ export class BrowserSessionManager {
 const defaultConnector: PlaywrightConnector = {
   connect: async (endpointUrl) => chromium.connectOverCDP(endpointUrl) as unknown as ConnectedBrowser,
 };
-
-const CAPTURE_POLICY = {
-  responseBodySizeLimitBytes: 262_144,
-  sensitiveEndpointPatterns: [
-    /\/auth(?:[/?#]|$)/i,
-    /\/login(?:[/?#]|$)/i,
-    /\/oauth(?:[/?#]|$)/i,
-    /\/password(?:[/?#]|$)/i,
-    /\/session(?:[/?#]|$)/i,
-    /\/token(?:[/?#]|$)/i,
-  ],
-} as const;
 
 type CaptureBodyPayload =
   | {
@@ -1840,18 +1847,29 @@ function collectCorrelationIds(
 function captureRequestBody(
   request: Record<string, unknown> | null,
   contentType?: string,
+  capturePolicy: ProjectCapturePolicy = createDefaultProjectSettings().capturePolicy,
   redactionRules: RedactionRule[] = [],
 ): CaptureBodyPayload {
-  const postData = typeof request?.postData === 'string' ? request.postData : null;
-  if (postData === null) {
-    return {
-      state: 'unavailable',
+  if (!capturePolicy.captureRequestBodies) {
+    return unavailableBody(
+      'Request body capture is disabled by the current project capture policy.',
       contentType,
-      reason: 'No request body was provided for this request.',
-    };
+    );
   }
 
-  return captureTextBody(postData, contentType, true, undefined, redactionRules);
+  const postData = typeof request?.postData === 'string' ? request.postData : null;
+  if (postData === null) {
+    return unavailableBody('No request body was provided for this request.', contentType);
+  }
+
+  return captureTextBody(
+    postData,
+    contentType,
+    true,
+    undefined,
+    capturePolicy,
+    redactionRules,
+  );
 }
 
 function captureTextBody(
@@ -1859,6 +1877,7 @@ function captureTextBody(
   contentType: string | undefined,
   requestScoped: boolean,
   targetUrl?: string,
+  capturePolicy: ProjectCapturePolicy = createDefaultProjectSettings().capturePolicy,
   redactionRules: RedactionRule[] = [],
 ): CaptureBodyPayload {
   if (!isTextualContentType(contentType)) {
@@ -1869,7 +1888,18 @@ function captureTextBody(
     };
   }
 
-  if (!requestScoped && isSensitiveEndpoint(targetUrl)) {
+  if (!requestScoped && !capturePolicy.captureResponseBodies) {
+    return unavailableBody(
+      'Response body capture is disabled by the current project capture policy.',
+      contentType,
+    );
+  }
+
+  if (
+    !requestScoped &&
+    capturePolicy.responseBodyCaptureMode === 'safe-default' &&
+    isSensitiveEndpoint(targetUrl, capturePolicy)
+  ) {
     return {
       state: 'excluded',
       contentType,
@@ -1878,11 +1908,11 @@ function captureTextBody(
     };
   }
 
-  if (Buffer.byteLength(text, 'utf8') > CAPTURE_POLICY.responseBodySizeLimitBytes) {
+  if (Buffer.byteLength(text, 'utf8') > capturePolicy.responseBodySizeLimitBytes) {
     return {
       state: 'truncated',
       contentType,
-      reason: `Body exceeded the current capture size limit of ${CAPTURE_POLICY.responseBodySizeLimitBytes} bytes.`,
+      reason: `Body exceeded the current capture size limit of ${capturePolicy.responseBodySizeLimitBytes} bytes.`,
     };
   }
 
@@ -1934,12 +1964,11 @@ function isTextualContentType(contentType?: string): boolean {
   );
 }
 
-function isSensitiveEndpoint(targetUrl?: string): boolean {
-  if (!targetUrl) {
-    return false;
-  }
-
-  return CAPTURE_POLICY.sensitiveEndpointPatterns.some((pattern) => pattern.test(targetUrl));
+function isSensitiveEndpoint(
+  targetUrl: string | undefined,
+  capturePolicy: ProjectCapturePolicy,
+): boolean {
+  return isSensitiveEndpointUrl(targetUrl, capturePolicy.sensitiveEndpointPatterns);
 }
 
 function redactSensitiveHeaders(

@@ -540,6 +540,145 @@ describe('BrowserSessionManager', () => {
     });
   });
 
+  it('honors project capture policy overrides for disabled and visible body capture', async () => {
+    const connectorStub = createConnectorStub();
+    const manager = new BrowserSessionManager(connectorStub.connector);
+    const observedEvents: Array<{ code: string; data?: Record<string, unknown> }> = [];
+    manager.registerSurface(createSurfaceStub());
+    manager.subscribe((event) => {
+      observedEvents.push({
+        code: event.code,
+        data: event.data,
+      });
+    });
+
+    await manager.launch({
+      targetUrl: 'https://example.com/',
+      capturePolicy: {
+        captureRequestBodies: false,
+        captureResponseBodies: true,
+        responseBodyCaptureMode: 'full-with-warning',
+        responseBodySizeLimitBytes: 262_144,
+        sensitiveEndpointPatterns: [],
+      },
+    });
+
+    connectorStub.state.setResponseBody(
+      'request-sensitive-override',
+      JSON.stringify({ token: 'opaque', session: 'super-secret' }),
+    );
+    connectorStub.state.emitCdpEvent('Network.requestWillBeSent', {
+      requestId: 'request-sensitive-override',
+      request: {
+        method: 'POST',
+        url: 'https://example.com/api/login',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        postData: JSON.stringify({ password: 'secret' }),
+      },
+    });
+    connectorStub.state.emitCdpEvent('Network.responseReceived', {
+      requestId: 'request-sensitive-override',
+      response: {
+        status: 200,
+        url: 'https://example.com/api/login',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observedEvents.find((event) => event.code === 'network.request.started')?.data)
+      .toMatchObject({
+        body: {
+          state: 'unavailable',
+          reason: 'Request body capture is disabled by the current project capture policy.',
+        },
+      });
+    expect(
+      observedEvents.find(
+        (event) =>
+          event.code === 'network.response.body.captured' &&
+          event.data?.requestId === 'request-sensitive-override',
+      )?.data,
+    ).toMatchObject({
+      requestId: 'request-sensitive-override',
+      responseBody: {
+        state: 'redacted',
+        redactionRuleIds: ['rule-token', 'rule-session'],
+      },
+    });
+  });
+
+  it('treats project-defined endpoint patterns as sensitive under the safe default policy', async () => {
+    const connectorStub = createConnectorStub();
+    const manager = new BrowserSessionManager(connectorStub.connector);
+    const observedEvents: Array<{ code: string; data?: Record<string, unknown> }> = [];
+    manager.registerSurface(createSurfaceStub());
+    manager.subscribe((event) => {
+      observedEvents.push({
+        code: event.code,
+        data: event.data,
+      });
+    });
+
+    await manager.launch({
+      targetUrl: 'https://example.com/',
+      capturePolicy: {
+        captureRequestBodies: true,
+        captureResponseBodies: true,
+        responseBodyCaptureMode: 'safe-default',
+        responseBodySizeLimitBytes: 262_144,
+        sensitiveEndpointPatterns: ['/api/billing/*'],
+      },
+    });
+
+    connectorStub.state.setResponseBody(
+      'request-billing-sensitive',
+      JSON.stringify({ accountNumber: 'abc123' }),
+    );
+    connectorStub.state.emitCdpEvent('Network.requestWillBeSent', {
+      requestId: 'request-billing-sensitive',
+      request: {
+        method: 'GET',
+        url: 'https://example.com/api/billing/statement',
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    });
+    connectorStub.state.emitCdpEvent('Network.responseReceived', {
+      requestId: 'request-billing-sensitive',
+      response: {
+        status: 200,
+        url: 'https://example.com/api/billing/statement',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(
+      observedEvents.find(
+        (event) =>
+          event.code === 'network.response.body.captured' &&
+          event.data?.requestId === 'request-billing-sensitive',
+      )?.data,
+    ).toMatchObject({
+      requestId: 'request-billing-sensitive',
+      responseBody: {
+        state: 'excluded',
+        reason:
+          'Response body capture is excluded for sensitive authentication or session endpoints by default.',
+      },
+    });
+  });
+
   it('applies user-defined redaction rules to live request and response capture', async () => {
     const connectorStub = createConnectorStub();
     const manager = new BrowserSessionManager(connectorStub.connector);

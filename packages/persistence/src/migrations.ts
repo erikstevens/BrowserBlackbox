@@ -4,6 +4,9 @@ export type SqliteMigration = {
   sql: string;
 };
 
+const DEFAULT_PROJECT_SETTINGS_JSON =
+  '{"capturePolicy":{"captureRequestBodies":true,"captureResponseBodies":true,"responseBodyCaptureMode":"safe-default","responseBodySizeLimitBytes":262144,"sensitiveEndpointPatterns":[]}}';
+
 export const migrations: SqliteMigration[] = [
   {
     id: 1,
@@ -333,6 +336,16 @@ export const migrations: SqliteMigration[] = [
       CREATE INDEX IF NOT EXISTS idx_checkpoints_flow ON checkpoints(flow_id);
 
       PRAGMA foreign_keys = ON;
+    `,
+  },
+  {
+    id: 4,
+    name: 'project_capture_settings',
+    sql: `
+      ALTER TABLE flows ADD COLUMN project_settings_json TEXT;
+      UPDATE flows
+      SET project_settings_json = '${DEFAULT_PROJECT_SETTINGS_JSON}'
+      WHERE project_settings_json IS NULL;
     `,
   },
 ];

@@ -19,6 +19,7 @@ import type {
   SimulationRule,
   TimelineEvent,
 } from '@browser-blackbox/domain';
+import { createDefaultProjectSettings } from '@browser-blackbox/shared';
 import type { Database, QueryExecResult } from 'sql.js';
 import type { StoredRunSnapshot } from './contracts';
 
@@ -54,7 +55,7 @@ export class SqliteRunRepository {
   loadSnapshot(flowId: string): StoredRunSnapshot | null {
     const flowRows = queryRows(
       this.database,
-      `SELECT flow_id, session_id, schema_version, created_at, manifest_json FROM flows WHERE flow_id = ?;`,
+      `SELECT flow_id, session_id, schema_version, created_at, manifest_json, project_settings_json FROM flows WHERE flow_id = ?;`,
       [flowId],
     );
 
@@ -122,6 +123,10 @@ export class SqliteRunRepository {
         createdAt: String(flowRow.created_at),
       },
       manifest,
+      projectSettings:
+        flowRow.project_settings_json === null
+          ? createDefaultProjectSettings()
+          : JSON.parse(String(flowRow.project_settings_json)),
       steps: queryRows(
         this.database,
         `SELECT payload_json FROM steps WHERE flow_id = ? ORDER BY sort_order ASC;`,
@@ -222,8 +227,10 @@ export class SqliteRunRepository {
   private insertFlow(snapshot: StoredRunSnapshot): void {
     this.database.run(
       `
-      INSERT INTO flows (flow_id, session_id, schema_version, created_at, manifest_json)
-      VALUES (?, ?, ?, ?, ?);
+      INSERT INTO flows (
+        flow_id, session_id, schema_version, created_at, manifest_json, project_settings_json
+      )
+      VALUES (?, ?, ?, ?, ?, ?);
       `,
       [
         snapshot.flow.flowId,
@@ -231,6 +238,7 @@ export class SqliteRunRepository {
         snapshot.flow.schemaVersion,
         snapshot.flow.createdAt,
         deterministicSerialize(snapshot.manifest),
+        deterministicSerialize(snapshot.projectSettings),
       ],
     );
   }

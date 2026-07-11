@@ -119,6 +119,22 @@
     @apply mt-2 w-full rounded-2xl border border-shell-border bg-black/20 px-4 py-3.5 text-shell-text outline-none transition-colors duration-100;
   }
 
+  .field-input {
+    @apply mt-2 w-full rounded-2xl border border-shell-border bg-black/20 px-4 py-3 text-shell-text outline-none transition-colors duration-100;
+  }
+
+  .field-input:focus {
+    @apply border-shell-accent;
+  }
+
+  .checkbox-field {
+    @apply flex items-start gap-3 text-sm leading-[1.6] text-shell-text;
+  }
+
+  .checkbox-field input {
+    @apply mt-1;
+  }
+
   .url-input:focus {
     @apply border-shell-accent;
   }

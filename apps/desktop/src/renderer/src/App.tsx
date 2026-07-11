@@ -3,6 +3,7 @@ import {
   domainVersions,
   productSummary,
   type CaptureBody,
+  type InspectionMetadata,
   type RecordedStep,
   type RedactionRule,
   type RequestResponseCapture,
@@ -28,6 +29,11 @@ import type {
 } from '@browser-blackbox/persistence/src/contracts';
 import { assessArtifactExportSafety } from '@browser-blackbox/persistence/src/export-safety';
 import {
+  DEFAULT_RESPONSE_BODY_CAPTURE_LIMIT_BYTES,
+  isSensitiveEndpointUrl,
+  type ProjectCapturePolicy,
+} from '@browser-blackbox/shared';
+import {
   createUserDefinedRedactionRule,
   getRecordingUndoAvailability,
   getSelectedRecordedStep,
@@ -40,6 +46,7 @@ export function App() {
   const runtimeHealth = useWorkspaceStore((state) => state.runtimeHealth);
   const runtimeEvents = useWorkspaceStore((state) => state.runtimeEvents);
   const currentInspection = useWorkspaceStore((state) => state.currentInspection);
+  const projectSettings = useWorkspaceStore((state) => state.projectSettings);
   const captures = useWorkspaceStore((state) => state.captures);
   const redactionRules = useWorkspaceStore((state) => state.redactionRules);
   const simulationRules = useWorkspaceStore((state) => state.simulationRules);
@@ -49,6 +56,7 @@ export function App() {
   const replayPlan = useWorkspaceStore((state) => state.replayPlan);
   const setUrl = useWorkspaceStore((state) => state.setTargetUrl);
   const setBrowserRuntime = useWorkspaceStore((state) => state.setBrowserRuntime);
+  const setProjectSettings = useWorkspaceStore((state) => state.setProjectSettings);
   const setRuntimeDiagnostics = useWorkspaceStore((state) => state.setRuntimeDiagnostics);
   const pushRuntimeUpdate = useWorkspaceStore((state) => state.pushRuntimeUpdate);
   const selectRecordedStep = useWorkspaceStore((state) => state.selectRecordedStep);
@@ -56,6 +64,9 @@ export function App() {
     (state) => state.replaceRecordedStepInReview,
   );
   const insertStepAfterSelection = useWorkspaceStore((state) => state.insertStepAfterSelection);
+  const insertAuthoredStepAfterSelection = useWorkspaceStore(
+    (state) => state.insertAuthoredStepAfterSelection,
+  );
   const moveRecordedStep = useWorkspaceStore((state) => state.moveRecordedStep);
   const disableRecordedStepInReview = useWorkspaceStore(
     (state) => state.disableRecordedStepInReview,
@@ -98,6 +109,8 @@ export function App() {
   const [newRuleScope, setNewRuleScope] = useState<RedactionRule['scope']>('both');
   const [newRuleTarget, setNewRuleTarget] = useState('');
   const [selectedSimulationRuleId, setSelectedSimulationRuleId] = useState<string | null>(null);
+  const [pendingActionInsertType, setPendingActionInsertType] =
+    useState<SupportedActionType>('click');
   const [simulationTitle, setSimulationTitle] = useState('Block route during replay');
   const [simulationAppliesTo, setSimulationAppliesTo] =
     useState<SimulationRule['appliesTo']>('global');
@@ -118,6 +131,7 @@ export function App() {
     useState<ArtifactBundleExportResult | null>(null);
   const [timelineFilter, setTimelineFilter] = useState<'all' | TimelineKindFilter>('all');
   const [artifactReopenPath, setArtifactReopenPath] = useState('');
+  const [sensitiveEndpointDraft, setSensitiveEndpointDraft] = useState('');
   const [lastReopenedArtifact, setLastReopenedArtifact] =
     useState<(ArtifactBundleReadResult & { rootDirectory: string }) | null>(null);
   const selectedRecordedStep = getSelectedRecordedStep(recordingSession);
@@ -247,11 +261,22 @@ export function App() {
     }
 
     void window.desktopShell.saveWorkingCopySnapshot(exportWorkingCopySnapshot());
-  }, [browserRuntime.sessionId, exportWorkingCopySnapshot, persistenceReady, recordingSession, url]);
+  }, [
+    browserRuntime.sessionId,
+    exportWorkingCopySnapshot,
+    persistenceReady,
+    projectSettings,
+    recordingSession,
+    url,
+  ]);
 
   useEffect(() => {
     void window.desktopShell.setRedactionRules(redactionRules);
   }, [redactionRules]);
+
+  useEffect(() => {
+    void window.desktopShell.setCapturePolicy(projectSettings.capturePolicy);
+  }, [projectSettings]);
 
   useEffect(() => {
     if (captures.length === 0) {
@@ -273,6 +298,7 @@ export function App() {
     try {
       const result = await window.desktopShell.launchBrowserSession({
         targetUrl: url,
+        capturePolicy: projectSettings.capturePolicy,
         redactionRules,
       });
       setBrowserRuntime(result.state);
@@ -322,6 +348,7 @@ export function App() {
         steps: useWorkspaceStore.getState().recordingSession.present.steps,
         checkpoints: useWorkspaceStore.getState().recordingSession.present.checkpoints,
         plan: replayPlan,
+        capturePolicy: useWorkspaceStore.getState().projectSettings.capturePolicy,
         redactionRules: useWorkspaceStore.getState().redactionRules,
         simulationRules: useWorkspaceStore.getState().simulationRules,
       });
@@ -417,6 +444,67 @@ export function App() {
     }
 
     loadSimulationRuleDraft(rule);
+  }
+
+  function updateCapturePolicy(
+    partial: Partial<ProjectCapturePolicy>,
+  ): void {
+    setProjectSettings({
+      capturePolicy: {
+        ...projectSettings.capturePolicy,
+        ...partial,
+      },
+    });
+  }
+
+  function addSensitiveEndpointPattern(): void {
+    const next = sensitiveEndpointDraft.trim();
+    if (next.length === 0) {
+      return;
+    }
+
+    if (projectSettings.capturePolicy.sensitiveEndpointPatterns.includes(next)) {
+      setSensitiveEndpointDraft('');
+      return;
+    }
+
+    updateCapturePolicy({
+      sensitiveEndpointPatterns: [
+        ...projectSettings.capturePolicy.sensitiveEndpointPatterns,
+        next,
+      ],
+    });
+    setSensitiveEndpointDraft('');
+  }
+
+  function addAssertionFromInspection(
+    kind: SupportedAssertionKind,
+  ): void {
+    if (!currentInspection) {
+      return;
+    }
+
+    insertAuthoredStepAfterSelection(
+      createInspectionAssertionStep(currentInspection, kind),
+    );
+  }
+
+  function addClickStepFromInspection(): void {
+    if (!currentInspection) {
+      return;
+    }
+
+    insertAuthoredStepAfterSelection(createInspectionClickStep(currentInspection));
+  }
+
+  function addActionFromToolbar(): void {
+    insertAuthoredStepAfterSelection(
+      createToolbarActionStep(
+        pendingActionInsertType,
+        selectedRecordedStep,
+        currentInspection,
+      ),
+    );
   }
 
   async function toggleInspectionMode(): Promise<void> {
@@ -638,13 +726,160 @@ export function App() {
             </div>
           </article>
 
+          <article className="panel control-panel" data-testid="project-settings-panel">
+            <p className="section-label">Project settings</p>
+            <p className="panel-copy">
+              Persist capture policy for this workspace. Mandatory credential and
+              secret redaction still applies even when visible response bodies are
+              allowed by project setting.
+            </p>
+            <div className="runtime-status">
+              <label className="checkbox-field" htmlFor="capture-request-bodies">
+                <input
+                  id="capture-request-bodies"
+                  type="checkbox"
+                  checked={projectSettings.capturePolicy.captureRequestBodies}
+                  onChange={(event) =>
+                    updateCapturePolicy({
+                      captureRequestBodies: event.target.checked,
+                    })
+                  }
+                />
+                <span>Capture request bodies</span>
+              </label>
+              <label className="checkbox-field" htmlFor="capture-response-bodies">
+                <input
+                  id="capture-response-bodies"
+                  type="checkbox"
+                  checked={projectSettings.capturePolicy.captureResponseBodies}
+                  onChange={(event) =>
+                    updateCapturePolicy({
+                      captureResponseBodies: event.target.checked,
+                    })
+                  }
+                />
+                <span>Capture response bodies</span>
+              </label>
+              <label className="field-label" htmlFor="response-body-mode">
+                Response body policy
+              </label>
+              <select
+                id="response-body-mode"
+                className="field-input"
+                value={projectSettings.capturePolicy.responseBodyCaptureMode}
+                disabled={!projectSettings.capturePolicy.captureResponseBodies}
+                onChange={(event) =>
+                  updateCapturePolicy({
+                    responseBodyCaptureMode:
+                      event.target.value === 'full-with-warning'
+                        ? 'full-with-warning'
+                        : 'safe-default',
+                  })
+                }
+              >
+                <option value="safe-default">Safe default</option>
+                <option value="full-with-warning">Visible bodies with warning</option>
+              </select>
+              <label className="field-label" htmlFor="response-body-limit">
+                Response body size limit
+              </label>
+              <select
+                id="response-body-limit"
+                className="field-input"
+                value={String(projectSettings.capturePolicy.responseBodySizeLimitBytes)}
+                disabled={!projectSettings.capturePolicy.captureResponseBodies}
+                onChange={(event) =>
+                  updateCapturePolicy({
+                    responseBodySizeLimitBytes: Number(event.target.value),
+                  })
+                }
+              >
+                {RESPONSE_BODY_LIMIT_OPTIONS.map((entry) => (
+                  <option key={entry} value={entry}>
+                    {formatByteLimit(entry)}
+                  </option>
+                ))}
+              </select>
+              <p className="panel-copy">
+                {describeCapturePolicy(projectSettings.capturePolicy)}
+              </p>
+              <div className="network-detail-card">
+                <p className="section-label">Sensitive endpoint patterns</p>
+                <p className="panel-copy">
+                  Add project-specific path fragments or `*` wildcard patterns that
+                  should be treated like auth/session endpoints under the safe
+                  default capture policy.
+                </p>
+                <label className="field-label" htmlFor="sensitive-endpoint-pattern">
+                  New pattern
+                </label>
+                <input
+                  id="sensitive-endpoint-pattern"
+                  className="field-input"
+                  value={sensitiveEndpointDraft}
+                  onChange={(event) => setSensitiveEndpointDraft(event.target.value)}
+                  placeholder="Example: /api/billing/*"
+                />
+                <div className="button-row">
+                  <button
+                    className="button button-secondary"
+                    type="button"
+                    onClick={() => addSensitiveEndpointPattern()}
+                  >
+                    Add endpoint pattern
+                  </button>
+                </div>
+                {projectSettings.capturePolicy.sensitiveEndpointPatterns.length === 0 ? (
+                  <p className="empty-state">
+                    No project-defined sensitive endpoints yet. Built-in auth and
+                    session endpoints are still protected by default.
+                  </p>
+                ) : (
+                  <div className="checkpoint-list">
+                    {projectSettings.capturePolicy.sensitiveEndpointPatterns.map((pattern) => (
+                      <div className="step-review-card" key={pattern}>
+                        <div className="step-review-header">
+                          <span className="step-index">custom-sensitive-endpoint</span>
+                          <button
+                            className="button button-danger"
+                            type="button"
+                            onClick={() =>
+                              updateCapturePolicy({
+                                sensitiveEndpointPatterns:
+                                  projectSettings.capturePolicy.sensitiveEndpointPatterns.filter(
+                                    (entry) => entry !== pattern,
+                                  ),
+                              })
+                            }
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <p className="step-title">{pattern}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {projectSettings.capturePolicy.responseBodyCaptureMode ===
+                'full-with-warning' &&
+              projectSettings.capturePolicy.captureResponseBodies ? (
+                <p className="runtime-error">
+                  Visible response-body capture is enabled for this project. Sensitive
+                  endpoints may now retain redacted but otherwise inspectable payload
+                  content when responses are textual and within the configured size limit.
+                </p>
+              ) : null}
+            </div>
+          </article>
+
           <article className="panel full-width-panel">
             <div className="panel-header">
               <div>
                 <p className="section-label">Request detail</p>
                 <p className="panel-copy">
                   Inspect captured browser requests with canonical body-state explanations,
-                  timing phases, and the current safe-by-default redaction baseline.
+                  timing phases, and the active project capture policy.
                 </p>
               </div>
             </div>
@@ -764,6 +999,9 @@ export function App() {
                         title="Request payload"
                         headers={selectedCapture.request.headers}
                         body={selectedCapture.request.body}
+                        sensitiveEndpointPatterns={
+                          projectSettings.capturePolicy.sensitiveEndpointPatterns
+                        }
                         testId="request-body-section"
                       />
                       <RequestBodySection
@@ -772,6 +1010,9 @@ export function App() {
                         body={selectedCapture.response?.body}
                         status={selectedCapture.response?.status}
                         failure={selectedCapture.failure}
+                        sensitiveEndpointPatterns={
+                          projectSettings.capturePolicy.sensitiveEndpointPatterns
+                        }
                         targetUrl={selectedCapture.request.url}
                         testId="response-body-section"
                       />
@@ -1372,6 +1613,29 @@ export function App() {
                         </p>
                       ))}
                     </div>
+                    <div className="button-row">
+                      <button
+                        className="button button-secondary"
+                        type="button"
+                        onClick={() => addAssertionFromInspection('element-visible')}
+                      >
+                        Add visible assertion
+                      </button>
+                      <button
+                        className="button button-secondary"
+                        type="button"
+                        onClick={() => addAssertionFromInspection('element-contains-text')}
+                      >
+                        Add text assertion
+                      </button>
+                      <button
+                        className="button button-secondary"
+                        type="button"
+                        onClick={() => addClickStepFromInspection()}
+                      >
+                        Add click step
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -1489,6 +1753,50 @@ export function App() {
                 >
                   Insert reload
                 </button>
+                <select
+                  aria-label="Insert action type"
+                  className="field-input"
+                  value={pendingActionInsertType}
+                  onChange={(event) =>
+                    setPendingActionInsertType(event.target.value as SupportedActionType)
+                  }
+                >
+                  {SUPPORTED_ACTION_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className="button button-secondary"
+                  onClick={() => addActionFromToolbar()}
+                >
+                  Insert action
+                </button>
+                <button
+                  className="button button-secondary"
+                  onClick={() => insertStepAfterSelection('assert-visible')}
+                >
+                  Assert visible
+                </button>
+                <button
+                  className="button button-secondary"
+                  onClick={() => insertStepAfterSelection('assert-enabled')}
+                >
+                  Assert enabled
+                </button>
+                <button
+                  className="button button-secondary"
+                  onClick={() => insertStepAfterSelection('assert-hidden')}
+                >
+                  Assert hidden
+                </button>
+                <button
+                  className="button button-secondary"
+                  onClick={() => insertStepAfterSelection('assert-text')}
+                >
+                  Assert text
+                </button>
                 <button
                   className="button button-secondary"
                   onClick={() => insertStepAfterSelection('url-assertion')}
@@ -1594,6 +1902,9 @@ export function App() {
 
                       {selectedRecordedStep.kind === 'action' ? (
                         <ActionEditor
+                          inspectedLocator={
+                            currentInspection?.recommendations.primary.locator ?? null
+                          }
                           step={selectedRecordedStep}
                           onChange={(step) =>
                             replaceRecordedStepInReview(selectedRecordedStep.id, step)
@@ -1601,6 +1912,14 @@ export function App() {
                         />
                       ) : (
                         <AssertionEditor
+                          inspectedLocator={
+                            currentInspection?.recommendations.primary.locator ?? null
+                          }
+                          inspectedText={
+                            currentInspection?.target.textContent ??
+                            currentInspection?.target.accessibleName ??
+                            null
+                          }
                           step={selectedRecordedStep}
                           onChange={(step) =>
                             replaceRecordedStepInReview(selectedRecordedStep.id, step)
@@ -2216,6 +2535,33 @@ type TimelineKindFilter =
 
 type AppTimelineEntry = TimelineEvent;
 
+const RESPONSE_BODY_LIMIT_OPTIONS = [
+  65_536,
+  DEFAULT_RESPONSE_BODY_CAPTURE_LIMIT_BYTES,
+  524_288,
+  1_048_576,
+];
+
+function formatByteLimit(value: number): string {
+  return `${Math.round(value / 1024)} KB`;
+}
+
+function describeCapturePolicy(policy: ProjectCapturePolicy): string {
+  if (!policy.captureResponseBodies) {
+    return 'Response body capture is disabled for this project.';
+  }
+
+  if (policy.responseBodyCaptureMode === 'full-with-warning') {
+    return `Response bodies are captured for textual responses up to ${formatByteLimit(
+      policy.responseBodySizeLimitBytes,
+    )}, including endpoints that the safe default or your project-defined sensitive endpoint list would normally exclude.`;
+  }
+
+  return `Response bodies follow the safe default policy up to ${formatByteLimit(
+    policy.responseBodySizeLimitBytes,
+  )}, excluding built-in and project-defined sensitive endpoints.`;
+}
+
 function matchesTimelineFilter(
   entry: AppTimelineEntry,
   filter: TimelineKindFilter,
@@ -2302,13 +2648,30 @@ function describeRecordedStep(step: RecordedStep): string {
       return `${step.action.selector} = ${
         step.action.sensitive ? '[REDACTED]' : step.action.value
       }`;
+    case 'select-option':
+      return `${step.action.selector} select "${step.action.value}"`;
+    case 'set-checked':
+      return `${step.action.selector} ${step.action.checked ? 'checked' : 'unchecked'}`;
+    case 'press-key':
+      return `${step.action.selector ?? 'page'} press ${[
+        ...step.action.modifiers,
+        step.action.key,
+      ].join('+')}`;
+    case 'drag-and-drop':
+      return `drag ${step.action.sourceSelector} -> ${step.action.targetSelector}`;
+    case 'upload-file':
+      return `${step.action.selector} upload ${step.action.fileName}`;
+    case 'dialog':
+      return `${step.action.action} ${step.action.dialogType} dialog`;
+    case 'wait-for-download':
+      return 'Wait for download';
+    case 'wait-for-popup':
+      return 'Wait for popup';
     case 'click':
     case 'double-click':
       return `${step.action.type} ${step.action.selector}`;
     case 'reload':
       return 'Reload the current page';
-    default:
-      return step.action.type;
   }
 }
 
@@ -2524,12 +2887,22 @@ function RequestBodySection(props: {
     code: string;
     message: string;
   };
+  sensitiveEndpointPatterns: string[];
   targetUrl?: string;
   testId: string;
 }) {
-  const { title, headers, body, status, failure, targetUrl, testId } = props;
+  const {
+    title,
+    headers,
+    body,
+    status,
+    failure,
+    sensitiveEndpointPatterns,
+    targetUrl,
+    testId,
+  } = props;
   const headerEntries = headers ? Object.entries(headers) : [];
-  const sensitiveEndpoint = isSensitiveEndpoint(targetUrl);
+  const sensitiveEndpoint = isSensitiveEndpointUrl(targetUrl, sensitiveEndpointPatterns);
 
   return (
     <section className="network-detail-card" data-testid={testId}>
@@ -2608,14 +2981,301 @@ function RequestBodySection(props: {
   );
 }
 
+function createToolbarActionStep(
+  type: SupportedActionType,
+  selectedStep: RecordedStep | null,
+  inspection: InspectionMetadata | null,
+): Extract<RecordedStep, { kind: 'action' }> {
+  const timestamp = new Date().toISOString();
+  const locator = derivePreferredLocator(selectedStep, inspection);
+  const action = convertActionKind(
+    {
+      type: 'click',
+      selector: locator,
+    },
+    type,
+    locator,
+  );
+
+  return {
+    schemaVersion: domainVersions.domainSchemaVersion,
+    id: `step-action-${type}-${timestamp}`,
+    title: describeActionTitle(type),
+    kind: 'action',
+    status: 'active',
+    evidenceState: 'current',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    dependencyStepIds: [],
+    invalidatesEvidenceAfter: true,
+    action,
+  };
+}
+
+function derivePreferredLocator(
+  selectedStep: RecordedStep | null,
+  inspection: InspectionMetadata | null,
+): string {
+  return (
+    inspection?.recommendations.primary.locator ??
+    getActionSelectableLocator(selectedStep) ??
+    'page.getByRole("button", { name: "Continue" })'
+  );
+}
+
+function getActionSelectableLocator(step: RecordedStep | null): string | null {
+  if (!step) {
+    return null;
+  }
+
+  if (step.kind === 'action') {
+    switch (step.action.type) {
+      case 'click':
+      case 'double-click':
+      case 'fill':
+      case 'select-option':
+      case 'set-checked':
+      case 'upload-file':
+        return step.action.selector;
+      case 'press-key':
+        return step.action.selector ?? null;
+      case 'drag-and-drop':
+        return step.action.targetSelector || step.action.sourceSelector;
+      default:
+        return null;
+    }
+  }
+
+  switch (step.assertion.kind) {
+    case 'element-visible':
+    case 'element-hidden':
+    case 'element-enabled':
+    case 'element-contains-text':
+      return step.assertion.selector;
+    default:
+      return null;
+  }
+}
+
+function describeActionTitle(type: SupportedActionType): string {
+  switch (type) {
+    case 'navigate':
+      return 'Navigate to page';
+    case 'click':
+      return 'Click element';
+    case 'double-click':
+      return 'Double click element';
+    case 'fill':
+      return 'Fill field';
+    case 'select-option':
+      return 'Select option';
+    case 'set-checked':
+      return 'Set checkbox or radio';
+    case 'press-key':
+      return 'Press key';
+    case 'drag-and-drop':
+      return 'Drag and drop';
+    case 'upload-file':
+      return 'Upload file';
+    case 'dialog':
+      return 'Handle dialog';
+    case 'wait-for-download':
+      return 'Wait for download';
+    case 'wait-for-popup':
+      return 'Wait for popup';
+    case 'reload':
+      return 'Reload current page';
+  }
+}
+
+function convertActionKind(
+  action: Extract<RecordedStep, { kind: 'action' }>['action'],
+  nextKind: SupportedActionType,
+  inspectedLocator: string | null,
+): Extract<RecordedStep, { kind: 'action' }>['action'] {
+  if (action.type === nextKind) {
+    return action;
+  }
+
+  const resolvedSelector = (() => {
+    if ('selector' in action && typeof action.selector === 'string') {
+      return action.selector;
+    }
+
+    if (action.type === 'drag-and-drop') {
+      return (
+        action.targetSelector ||
+        action.sourceSelector ||
+        inspectedLocator ||
+        'page.getByRole("button", { name: "Continue" })'
+      );
+    }
+
+    if (action.type === 'press-key') {
+      return (
+        action.selector ??
+        inspectedLocator ??
+        'page.getByRole("button", { name: "Continue" })'
+      );
+    }
+
+    return inspectedLocator ?? 'page.getByRole("button", { name: "Continue" })';
+  })();
+
+  switch (nextKind) {
+    case 'navigate':
+      return {
+        type: 'navigate',
+        url: 'https://example.test/dashboard',
+      };
+    case 'click':
+    case 'double-click':
+      return {
+        type: nextKind,
+        selector: resolvedSelector,
+      };
+    case 'fill':
+      return {
+        type: 'fill',
+        selector: resolvedSelector,
+        value: '',
+        sensitive: false,
+      };
+    case 'select-option':
+      return {
+        type: 'select-option',
+        selector: resolvedSelector,
+        value: 'option-1',
+      };
+    case 'set-checked':
+      return {
+        type: 'set-checked',
+        selector: resolvedSelector,
+        checked: true,
+      };
+    case 'press-key':
+      return {
+        type: 'press-key',
+        selector: resolvedSelector,
+        key: 'Enter',
+        modifiers: [],
+      };
+    case 'drag-and-drop':
+      return {
+        type: 'drag-and-drop',
+        sourceSelector: resolvedSelector,
+        targetSelector: resolvedSelector,
+      };
+    case 'upload-file':
+      return {
+        type: 'upload-file',
+        selector: resolvedSelector,
+        fileName: 'fixtures/upload.txt',
+      };
+    case 'dialog':
+      return {
+        type: 'dialog',
+        dialogType: 'alert',
+        action: 'accept',
+      };
+    case 'wait-for-download':
+    case 'wait-for-popup':
+    case 'reload':
+      return {
+        type: nextKind,
+      };
+  }
+}
+
+type SupportedActionType =
+  | 'navigate'
+  | 'click'
+  | 'double-click'
+  | 'fill'
+  | 'select-option'
+  | 'set-checked'
+  | 'press-key'
+  | 'drag-and-drop'
+  | 'upload-file'
+  | 'dialog'
+  | 'wait-for-download'
+  | 'wait-for-popup'
+  | 'reload';
+
+const SUPPORTED_ACTION_OPTIONS: Array<{
+  value: SupportedActionType;
+  label: string;
+}> = [
+  { value: 'navigate', label: 'Navigate' },
+  { value: 'click', label: 'Click' },
+  { value: 'double-click', label: 'Double click' },
+  { value: 'fill', label: 'Fill text' },
+  { value: 'select-option', label: 'Select option' },
+  { value: 'set-checked', label: 'Set checked' },
+  { value: 'press-key', label: 'Press key' },
+  { value: 'drag-and-drop', label: 'Drag and drop' },
+  { value: 'upload-file', label: 'Upload file' },
+  { value: 'dialog', label: 'Dialog' },
+  { value: 'wait-for-download', label: 'Wait for download' },
+  { value: 'wait-for-popup', label: 'Wait for popup' },
+  { value: 'reload', label: 'Reload' },
+];
+
 
 function ActionEditor(props: {
+  inspectedLocator: string | null;
   step: Extract<RecordedStep, { kind: 'action' }>;
   onChange: (step: Extract<RecordedStep, { kind: 'action' }>) => void;
 }) {
-  const { step, onChange } = props;
+  const { inspectedLocator, step, onChange } = props;
+  const updateAction = (
+    nextAction: Extract<RecordedStep, { kind: 'action' }>['action'],
+  ): void => {
+    onChange({
+      ...step,
+      updatedAt: new Date().toISOString(),
+      action: nextAction,
+    });
+  };
 
-  switch (step.action.type) {
+  return (
+    <>
+      <label className="field-label" htmlFor="action-kind">
+        Action type
+      </label>
+      <select
+        id="action-kind"
+        className="field-input"
+        value={step.action.type}
+        onChange={(event) =>
+          updateAction(
+            convertActionKind(
+              step.action,
+              event.target.value as SupportedActionType,
+              inspectedLocator,
+            ),
+          )
+        }
+      >
+        {SUPPORTED_ACTION_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      {renderActionFields(step.action, inspectedLocator, updateAction)}
+    </>
+  );
+}
+
+function renderActionFields(
+  action: Extract<RecordedStep, { kind: 'action' }>['action'],
+  inspectedLocator: string | null,
+  updateAction: (
+    nextAction: Extract<RecordedStep, { kind: 'action' }>['action'],
+  ) => void,
+) {
+  switch (action.type) {
     case 'navigate': {
       return (
         <>
@@ -2625,15 +3285,11 @@ function ActionEditor(props: {
           <input
             id="step-url"
             className="url-input"
-            value={step.action.url}
+            value={action.url}
             onChange={(event) =>
-              onChange({
-                ...step,
-                updatedAt: new Date().toISOString(),
-                action: {
-                  type: 'navigate',
-                  url: event.target.value,
-                },
+              updateAction({
+                type: 'navigate',
+                url: event.target.value,
               })
             }
           />
@@ -2641,7 +3297,6 @@ function ActionEditor(props: {
       );
     }
     case 'fill': {
-      const action = step.action;
       return (
         <>
           <label className="field-label" htmlFor="step-selector">
@@ -2652,18 +3307,32 @@ function ActionEditor(props: {
             className="url-input"
             value={action.selector}
             onChange={(event) =>
-              onChange({
-                ...step,
-                updatedAt: new Date().toISOString(),
-                action: {
-                  type: 'fill',
-                  selector: event.target.value,
-                  value: action.value,
-                  sensitive: action.sensitive,
-                },
+              updateAction({
+                type: 'fill',
+                selector: event.target.value,
+                value: action.value,
+                sensitive: action.sensitive,
               })
             }
           />
+          {inspectedLocator ? (
+            <div className="button-row">
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() =>
+                  updateAction({
+                    type: 'fill',
+                    selector: inspectedLocator,
+                    value: action.value,
+                    sensitive: action.sensitive,
+                  })
+                }
+              >
+                Use inspected locator
+              </button>
+            </div>
+          ) : null}
           <label className="field-label" htmlFor="step-value">
             Text value
           </label>
@@ -2672,24 +3341,35 @@ function ActionEditor(props: {
             className="url-input"
             value={action.value}
             onChange={(event) =>
-              onChange({
-                ...step,
-                updatedAt: new Date().toISOString(),
-                action: {
-                  type: 'fill',
-                  selector: action.selector,
-                  value: event.target.value,
-                  sensitive: action.sensitive,
-                },
+              updateAction({
+                type: 'fill',
+                selector: action.selector,
+                value: event.target.value,
+                sensitive: action.sensitive,
               })
             }
           />
+          <label className="checkbox-field" htmlFor="step-sensitive">
+            <input
+              id="step-sensitive"
+              type="checkbox"
+              checked={action.sensitive}
+              onChange={(event) =>
+                updateAction({
+                  type: 'fill',
+                  selector: action.selector,
+                  value: action.value,
+                  sensitive: event.target.checked,
+                })
+              }
+            />
+            <span>Mask this value in the review lane</span>
+          </label>
         </>
       );
     }
     case 'click':
     case 'double-click': {
-      const action = step.action;
       return (
         <>
           <label className="field-label" htmlFor="step-selector">
@@ -2700,19 +3380,399 @@ function ActionEditor(props: {
             className="url-input"
             value={action.selector}
             onChange={(event) =>
-              onChange({
-                ...step,
-                updatedAt: new Date().toISOString(),
-                action: {
-                  type: action.type,
-                  selector: event.target.value,
-                },
+              updateAction({
+                type: action.type,
+                selector: event.target.value,
+              })
+            }
+          />
+          {inspectedLocator ? (
+            <div className="button-row">
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() =>
+                  updateAction({
+                    type: action.type,
+                    selector: inspectedLocator,
+                  })
+                }
+              >
+                Use inspected locator
+              </button>
+            </div>
+          ) : null}
+        </>
+      );
+    }
+    case 'select-option':
+      return (
+        <>
+          <label className="field-label" htmlFor="step-selector">
+            Selector
+          </label>
+          <input
+            id="step-selector"
+            className="url-input"
+            value={action.selector}
+            onChange={(event) =>
+              updateAction({
+                type: 'select-option',
+                selector: event.target.value,
+                value: action.value,
+              })
+            }
+          />
+          {inspectedLocator ? (
+            <div className="button-row">
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() =>
+                  updateAction({
+                    type: 'select-option',
+                    selector: inspectedLocator,
+                    value: action.value,
+                  })
+                }
+              >
+                Use inspected locator
+              </button>
+            </div>
+          ) : null}
+          <label className="field-label" htmlFor="step-option-value">
+            Option value
+          </label>
+          <input
+            id="step-option-value"
+            className="url-input"
+            value={action.value}
+            onChange={(event) =>
+              updateAction({
+                type: 'select-option',
+                selector: action.selector,
+                value: event.target.value,
               })
             }
           />
         </>
       );
-    }
+    case 'set-checked':
+      return (
+        <>
+          <label className="field-label" htmlFor="step-selector">
+            Selector
+          </label>
+          <input
+            id="step-selector"
+            className="url-input"
+            value={action.selector}
+            onChange={(event) =>
+              updateAction({
+                type: 'set-checked',
+                selector: event.target.value,
+                checked: action.checked,
+              })
+            }
+          />
+          {inspectedLocator ? (
+            <div className="button-row">
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() =>
+                  updateAction({
+                    type: 'set-checked',
+                    selector: inspectedLocator,
+                    checked: action.checked,
+                  })
+                }
+              >
+                Use inspected locator
+              </button>
+            </div>
+          ) : null}
+          <label className="checkbox-field" htmlFor="step-checked">
+            <input
+              id="step-checked"
+              type="checkbox"
+              checked={action.checked}
+              onChange={(event) =>
+                updateAction({
+                  type: 'set-checked',
+                  selector: action.selector,
+                  checked: event.target.checked,
+                })
+              }
+            />
+            <span>Checked</span>
+          </label>
+        </>
+      );
+    case 'press-key':
+      return (
+        <>
+          <label className="field-label" htmlFor="step-selector">
+            Selector (optional)
+          </label>
+          <input
+            id="step-selector"
+            className="url-input"
+            value={action.selector ?? ''}
+            onChange={(event) =>
+              updateAction({
+                type: 'press-key',
+                selector: event.target.value.trim().length > 0 ? event.target.value : undefined,
+                key: action.key,
+                modifiers: action.modifiers,
+              })
+            }
+          />
+          {inspectedLocator ? (
+            <div className="button-row">
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() =>
+                  updateAction({
+                    type: 'press-key',
+                    selector: inspectedLocator,
+                    key: action.key,
+                    modifiers: action.modifiers,
+                  })
+                }
+              >
+                Use inspected locator
+              </button>
+            </div>
+          ) : null}
+          <label className="field-label" htmlFor="step-key">
+            Key
+          </label>
+          <input
+            id="step-key"
+            className="url-input"
+            value={action.key}
+            onChange={(event) =>
+              updateAction({
+                type: 'press-key',
+                selector: action.selector,
+                key: event.target.value,
+                modifiers: action.modifiers,
+              })
+            }
+          />
+          <label className="field-label" htmlFor="step-modifiers">
+            Modifiers (comma-separated)
+          </label>
+          <input
+            id="step-modifiers"
+            className="url-input"
+            value={action.modifiers.join(', ')}
+            onChange={(event) =>
+              updateAction({
+                type: 'press-key',
+                selector: action.selector,
+                key: action.key,
+                modifiers: event.target.value
+                  .split(',')
+                  .map((entry) => entry.trim())
+                  .filter((entry) => entry.length > 0),
+              })
+            }
+          />
+        </>
+      );
+    case 'drag-and-drop':
+      return (
+        <>
+          <label className="field-label" htmlFor="step-source-selector">
+            Source selector
+          </label>
+          <input
+            id="step-source-selector"
+            className="url-input"
+            value={action.sourceSelector}
+            onChange={(event) =>
+              updateAction({
+                type: 'drag-and-drop',
+                sourceSelector: event.target.value,
+                targetSelector: action.targetSelector,
+              })
+            }
+          />
+          <label className="field-label" htmlFor="step-target-selector">
+            Target selector
+          </label>
+          <input
+            id="step-target-selector"
+            className="url-input"
+            value={action.targetSelector}
+            onChange={(event) =>
+              updateAction({
+                type: 'drag-and-drop',
+                sourceSelector: action.sourceSelector,
+                targetSelector: event.target.value,
+              })
+            }
+          />
+          {inspectedLocator ? (
+            <div className="button-row">
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() =>
+                  updateAction({
+                    type: 'drag-and-drop',
+                    sourceSelector: inspectedLocator,
+                    targetSelector: action.targetSelector,
+                  })
+                }
+              >
+                Use inspected as source
+              </button>
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() =>
+                  updateAction({
+                    type: 'drag-and-drop',
+                    sourceSelector: action.sourceSelector,
+                    targetSelector: inspectedLocator,
+                  })
+                }
+              >
+                Use inspected as target
+              </button>
+            </div>
+          ) : null}
+        </>
+      );
+    case 'upload-file':
+      return (
+        <>
+          <label className="field-label" htmlFor="step-selector">
+            Selector
+          </label>
+          <input
+            id="step-selector"
+            className="url-input"
+            value={action.selector}
+            onChange={(event) =>
+              updateAction({
+                type: 'upload-file',
+                selector: event.target.value,
+                fileName: action.fileName,
+              })
+            }
+          />
+          {inspectedLocator ? (
+            <div className="button-row">
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() =>
+                  updateAction({
+                    type: 'upload-file',
+                    selector: inspectedLocator,
+                    fileName: action.fileName,
+                  })
+                }
+              >
+                Use inspected locator
+              </button>
+            </div>
+          ) : null}
+          <label className="field-label" htmlFor="step-file-name">
+            File path
+          </label>
+          <input
+            id="step-file-name"
+            className="url-input"
+            value={action.fileName}
+            onChange={(event) =>
+              updateAction({
+                type: 'upload-file',
+                selector: action.selector,
+                fileName: event.target.value,
+              })
+            }
+          />
+        </>
+      );
+    case 'dialog':
+      return (
+        <>
+          <label className="field-label" htmlFor="step-dialog-type">
+            Dialog type
+          </label>
+          <select
+            id="step-dialog-type"
+            className="field-input"
+            value={action.dialogType}
+            onChange={(event) =>
+              updateAction({
+                type: 'dialog',
+                dialogType: event.target.value as
+                  | 'alert'
+                  | 'confirm'
+                  | 'prompt'
+                  | 'beforeunload',
+                action: action.action,
+                promptText: action.promptText,
+              })
+            }
+          >
+            <option value="alert">Alert</option>
+            <option value="confirm">Confirm</option>
+            <option value="prompt">Prompt</option>
+            <option value="beforeunload">Before unload</option>
+          </select>
+          <label className="field-label" htmlFor="step-dialog-action">
+            Dialog action
+          </label>
+          <select
+            id="step-dialog-action"
+            className="field-input"
+            value={action.action}
+            onChange={(event) =>
+              updateAction({
+                type: 'dialog',
+                dialogType: action.dialogType,
+                action: event.target.value as 'accept' | 'dismiss',
+                promptText: action.promptText,
+              })
+            }
+          >
+            <option value="accept">Accept</option>
+            <option value="dismiss">Dismiss</option>
+          </select>
+          <label className="field-label" htmlFor="step-dialog-prompt">
+            Prompt text (optional)
+          </label>
+          <input
+            id="step-dialog-prompt"
+            className="url-input"
+            value={action.promptText ?? ''}
+            onChange={(event) =>
+              updateAction({
+                type: 'dialog',
+                dialogType: action.dialogType,
+                action: action.action,
+                promptText: event.target.value.trim().length > 0 ? event.target.value : undefined,
+              })
+            }
+          />
+        </>
+      );
+    case 'wait-for-download':
+    case 'wait-for-popup':
+    case 'reload':
+      return (
+        <p className="empty-state">
+          This action type has no additional parameters.
+        </p>
+      );
     default:
       return (
         <p className="empty-state">
@@ -2722,25 +3782,266 @@ function ActionEditor(props: {
   }
 }
 
-function isSensitiveEndpoint(targetUrl: string | undefined): boolean {
-  if (!targetUrl) {
-    return false;
+type SupportedAssertionKind =
+  | 'element-visible'
+  | 'element-hidden'
+  | 'element-enabled'
+  | 'element-contains-text'
+  | 'url-matches';
+
+const SUPPORTED_ASSERTION_OPTIONS: Array<{
+  value: SupportedAssertionKind;
+  label: string;
+}> = [
+  { value: 'element-visible', label: 'Element visible' },
+  { value: 'element-hidden', label: 'Element hidden' },
+  { value: 'element-enabled', label: 'Element enabled' },
+  { value: 'element-contains-text', label: 'Element contains text' },
+  { value: 'url-matches', label: 'URL matches' },
+];
+
+function convertAssertionKind(
+  assertion: Extract<RecordedStep, { kind: 'assertion' }>['assertion'],
+  nextKind: SupportedAssertionKind,
+  inspectedLocator: string | null,
+  inspectedText: string | null,
+): Extract<RecordedStep, { kind: 'assertion' }>['assertion'] {
+  if (assertion.kind === nextKind) {
+    return assertion;
   }
 
-  return /\/(auth|login|oauth|password|session|token)(?:[/?#]|$)/i.test(targetUrl);
+  const selector =
+    'selector' in assertion
+      ? assertion.selector
+      : inspectedLocator ?? 'page.getByRole("heading", { name: "Dashboard" })';
+
+  switch (nextKind) {
+    case 'element-visible':
+    case 'element-hidden':
+    case 'element-enabled':
+      return {
+        schemaVersion: assertion.schemaVersion,
+        kind: nextKind,
+        selector,
+      };
+    case 'element-contains-text':
+      return {
+        schemaVersion: assertion.schemaVersion,
+        kind: 'element-contains-text',
+        selector,
+        expectedText:
+          assertion.kind === 'element-contains-text'
+            ? assertion.expectedText
+            : inspectedText ?? 'Expected text',
+      };
+    case 'url-matches':
+      return {
+        schemaVersion: assertion.schemaVersion,
+        kind: 'url-matches',
+        expectedUrl:
+          assertion.kind === 'url-matches'
+            ? assertion.expectedUrl
+            : 'https://example.test/dashboard',
+        matchMode: assertion.kind === 'url-matches' ? assertion.matchMode : 'exact',
+      };
+  }
+}
+
+function createInspectionAssertionStep(
+  inspection: InspectionMetadata,
+  kind: SupportedAssertionKind,
+): Extract<RecordedStep, { kind: 'assertion' }> {
+  const timestamp = new Date().toISOString();
+  const locator = inspection.recommendations.primary.locator;
+  const visibleText =
+    inspection.target.textContent ?? inspection.target.accessibleName ?? 'Expected text';
+
+  return {
+    schemaVersion: domainVersions.domainSchemaVersion,
+    id: `step-inspection-${kind}-${timestamp}`,
+    title: describeInspectionAssertionTitle(kind, inspection),
+    kind: 'assertion',
+    status: 'active',
+    evidenceState: 'current',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    dependencyStepIds: [],
+    invalidatesEvidenceAfter: true,
+    assertion: convertAssertionKind(
+      {
+        schemaVersion: domainVersions.domainSchemaVersion,
+        kind: 'element-visible',
+        selector: locator,
+      },
+      kind,
+      locator,
+      visibleText,
+    ),
+  };
+}
+
+function createInspectionClickStep(
+  inspection: InspectionMetadata,
+): Extract<RecordedStep, { kind: 'action' }> {
+  const timestamp = new Date().toISOString();
+  const targetName =
+    inspection.target.accessibleName ??
+    inspection.target.labelText ??
+    inspection.target.textContent ??
+    inspection.target.tagName.toLowerCase();
+
+  return {
+    schemaVersion: domainVersions.domainSchemaVersion,
+    id: `step-inspection-click-${timestamp}`,
+    title: `Click ${targetName}`,
+    kind: 'action',
+    status: 'active',
+    evidenceState: 'current',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    dependencyStepIds: [],
+    invalidatesEvidenceAfter: true,
+    action: {
+      type: 'click',
+      selector: inspection.recommendations.primary.locator,
+    },
+  };
+}
+
+function describeInspectionAssertionTitle(
+  kind: SupportedAssertionKind,
+  inspection: InspectionMetadata,
+): string {
+  const targetName =
+    inspection.target.accessibleName ??
+    inspection.target.labelText ??
+    inspection.target.textContent ??
+    inspection.target.tagName.toLowerCase();
+
+  switch (kind) {
+    case 'element-visible':
+      return `Assert ${targetName} visible`;
+    case 'element-hidden':
+      return `Assert ${targetName} hidden`;
+    case 'element-enabled':
+      return `Assert ${targetName} enabled`;
+    case 'element-contains-text':
+      return `Assert ${targetName} text`;
+    case 'url-matches':
+      return 'Assert current URL';
+  }
 }
 
 function AssertionEditor(props: {
+  inspectedLocator: string | null;
+  inspectedText: string | null;
   step: Extract<RecordedStep, { kind: 'assertion' }>;
   onChange: (step: Extract<RecordedStep, { kind: 'assertion' }>) => void;
 }) {
-  const { step, onChange } = props;
+  const { inspectedLocator, inspectedText, step, onChange } = props;
+  const assertion = step.assertion;
 
-  switch (step.assertion.kind) {
+  const updateAssertion = (
+    nextAssertion: Extract<RecordedStep, { kind: 'assertion' }>['assertion'],
+  ): void => {
+    onChange({
+      ...step,
+      updatedAt: new Date().toISOString(),
+      assertion: nextAssertion,
+    });
+  };
+
+  const selectorAssertion =
+    assertion.kind === 'element-visible' ||
+    assertion.kind === 'element-hidden' ||
+    assertion.kind === 'element-enabled' ||
+    assertion.kind === 'element-contains-text'
+      ? assertion
+      : null;
+
+  const canUseInspectedLocator = inspectedLocator !== null && selectorAssertion !== null;
+  const canUseInspectedText =
+    inspectedText !== null && assertion.kind === 'element-contains-text';
+
+  return (
+    <>
+      <label className="field-label" htmlFor="assertion-kind">
+        Assertion type
+      </label>
+      <select
+        id="assertion-kind"
+        className="field-input"
+        value={assertion.kind}
+        onChange={(event) =>
+          updateAssertion(
+            convertAssertionKind(
+              assertion,
+              event.target.value as SupportedAssertionKind,
+              inspectedLocator,
+              inspectedText,
+            ),
+          )
+        }
+      >
+        {SUPPORTED_ASSERTION_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      {canUseInspectedLocator ? (
+        <div className="button-row">
+          <button
+            className="button button-secondary"
+            type="button"
+            onClick={() => {
+              if (!selectorAssertion) {
+                return;
+              }
+
+              updateAssertion({
+                ...selectorAssertion,
+                selector: inspectedLocator,
+              });
+            }}
+          >
+            Use inspected locator
+          </button>
+          {canUseInspectedText ? (
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => {
+                if (assertion.kind !== 'element-contains-text' || inspectedText === null) {
+                  return;
+                }
+
+                updateAssertion({
+                  ...assertion,
+                  expectedText: inspectedText,
+                });
+              }}
+            >
+              Use inspected text
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {renderAssertionFields(assertion, updateAssertion)}
+    </>
+  );
+}
+
+function renderAssertionFields(
+  assertion: Extract<RecordedStep, { kind: 'assertion' }>['assertion'],
+  updateAssertion: (
+    nextAssertion: Extract<RecordedStep, { kind: 'assertion' }>['assertion'],
+  ) => void,
+) {
+  switch (assertion.kind) {
     case 'element-visible':
     case 'element-hidden':
     case 'element-enabled': {
-      const assertion = step.assertion;
       return (
         <>
           <label className="field-label" htmlFor="assertion-selector">
@@ -2751,14 +4052,10 @@ function AssertionEditor(props: {
             className="url-input"
             value={assertion.selector}
             onChange={(event) =>
-              onChange({
-                ...step,
-                updatedAt: new Date().toISOString(),
-                assertion: {
-                  schemaVersion: assertion.schemaVersion,
-                  kind: assertion.kind,
-                  selector: event.target.value,
-                },
+              updateAssertion({
+                schemaVersion: assertion.schemaVersion,
+                kind: assertion.kind,
+                selector: event.target.value,
               })
             }
           />
@@ -2766,7 +4063,6 @@ function AssertionEditor(props: {
       );
     }
     case 'element-contains-text': {
-      const assertion = step.assertion;
       return (
         <>
           <label className="field-label" htmlFor="assertion-selector">
@@ -2777,15 +4073,11 @@ function AssertionEditor(props: {
             className="url-input"
             value={assertion.selector}
             onChange={(event) =>
-              onChange({
-                ...step,
-                updatedAt: new Date().toISOString(),
-                assertion: {
-                  schemaVersion: assertion.schemaVersion,
-                  kind: 'element-contains-text',
-                  selector: event.target.value,
-                  expectedText: assertion.expectedText,
-                },
+              updateAssertion({
+                schemaVersion: assertion.schemaVersion,
+                kind: 'element-contains-text',
+                selector: event.target.value,
+                expectedText: assertion.expectedText,
               })
             }
           />
@@ -2797,15 +4089,11 @@ function AssertionEditor(props: {
             className="url-input"
             value={assertion.expectedText}
             onChange={(event) =>
-              onChange({
-                ...step,
-                updatedAt: new Date().toISOString(),
-                assertion: {
-                  schemaVersion: assertion.schemaVersion,
-                  kind: 'element-contains-text',
-                  selector: assertion.selector,
-                  expectedText: event.target.value,
-                },
+              updateAssertion({
+                schemaVersion: assertion.schemaVersion,
+                kind: 'element-contains-text',
+                selector: assertion.selector,
+                expectedText: event.target.value,
               })
             }
           />
@@ -2813,7 +4101,6 @@ function AssertionEditor(props: {
       );
     }
     case 'url-matches': {
-      const assertion = step.assertion;
       return (
         <>
           <label className="field-label" htmlFor="assertion-url">
@@ -2824,18 +4111,34 @@ function AssertionEditor(props: {
             className="url-input"
             value={assertion.expectedUrl}
             onChange={(event) =>
-              onChange({
-                ...step,
-                updatedAt: new Date().toISOString(),
-                assertion: {
-                  schemaVersion: assertion.schemaVersion,
-                  kind: 'url-matches',
-                  expectedUrl: event.target.value,
-                  matchMode: assertion.matchMode,
-                },
+              updateAssertion({
+                schemaVersion: assertion.schemaVersion,
+                kind: 'url-matches',
+                expectedUrl: event.target.value,
+                matchMode: assertion.matchMode,
               })
             }
           />
+          <label className="field-label" htmlFor="assertion-url-mode">
+            Match mode
+          </label>
+          <select
+            id="assertion-url-mode"
+            className="field-input"
+            value={assertion.matchMode}
+            onChange={(event) =>
+              updateAssertion({
+                schemaVersion: assertion.schemaVersion,
+                kind: 'url-matches',
+                expectedUrl: assertion.expectedUrl,
+                matchMode: event.target.value as 'exact' | 'glob' | 'regex',
+              })
+            }
+          >
+            <option value="exact">Exact</option>
+            <option value="glob">Glob</option>
+            <option value="regex">Regex</option>
+          </select>
         </>
       );
     }

@@ -82,6 +82,72 @@ describe('workspace recording review state', () => {
     ).toBe('disabled');
   });
 
+  it('inserts supported assertion templates with selector-aware defaults', () => {
+    const state = useWorkspaceStore.getState();
+
+    state.selectRecordedStep('step-submit-login');
+    state.insertStepAfterSelection('assert-visible');
+    state.insertStepAfterSelection('assert-text');
+
+    const session = useWorkspaceStore.getState().recordingSession;
+    const visibleAssertion = session.present.steps.find(
+      (step) => step.title === 'Assert element visible',
+    );
+    const textAssertion = session.present.steps.find(
+      (step) => step.title === 'Assert element text',
+    );
+
+    expect(visibleAssertion).toMatchObject({
+      kind: 'assertion',
+      assertion: {
+        kind: 'element-visible',
+        selector: 'page.getByRole("button", { name: "Sign in" })',
+      },
+    });
+    expect(textAssertion).toMatchObject({
+      kind: 'assertion',
+      assertion: {
+        kind: 'element-contains-text',
+        selector: 'page.getByRole("button", { name: "Sign in" })',
+        expectedText: 'Expected text',
+      },
+    });
+  });
+
+  it('inserts a fully authored step after the current selection', () => {
+    const state = useWorkspaceStore.getState();
+
+    state.selectRecordedStep('step-submit-login');
+    state.insertAuthoredStepAfterSelection({
+      schemaVersion: '1.0.0',
+      id: 'step-authored-inspection',
+      title: 'Assert inspected target visible',
+      kind: 'assertion',
+      status: 'active',
+      evidenceState: 'current',
+      createdAt: '2026-07-10T20:00:00.000Z',
+      updatedAt: '2026-07-10T20:00:00.000Z',
+      dependencyStepIds: [],
+      invalidatesEvidenceAfter: true,
+      assertion: {
+        schemaVersion: '1.0.0',
+        kind: 'element-visible',
+        selector: 'page.getByTestId("login-submit")',
+      },
+    });
+
+    const session = useWorkspaceStore.getState().recordingSession;
+    const inserted = session.present.steps.find((step) => step.id === 'step-authored-inspection');
+
+    expect(inserted).toMatchObject({
+      dependencyStepIds: ['step-submit-login'],
+      assertion: {
+        kind: 'element-visible',
+        selector: 'page.getByTestId("login-submit")',
+      },
+    });
+  });
+
   it('replaces the seeded review flow with live captured steps', () => {
     const state = useWorkspaceStore.getState();
     state.beginRuntimeCapture('https://example.test/login', 'session-live-001');
@@ -207,6 +273,15 @@ describe('workspace recording review state', () => {
         kind: 'route-block',
       },
     });
+    state.setProjectSettings({
+      capturePolicy: {
+        captureRequestBodies: true,
+        captureResponseBodies: true,
+        responseBodyCaptureMode: 'full-with-warning',
+        responseBodySizeLimitBytes: 524288,
+        sensitiveEndpointPatterns: ['/api/billing/*'],
+      },
+    });
     state.pushRuntimeUpdate({
       state: {
         phase: 'running',
@@ -253,6 +328,13 @@ describe('workspace recording review state', () => {
 
     const hydrated = useWorkspaceStore.getState();
     expect(hydrated.targetUrl).toBe('https://example.test/login');
+    expect(hydrated.projectSettings.capturePolicy).toMatchObject({
+      captureRequestBodies: true,
+      captureResponseBodies: true,
+      responseBodyCaptureMode: 'full-with-warning',
+      responseBodySizeLimitBytes: 524288,
+      sensitiveEndpointPatterns: ['/api/billing/*'],
+    });
     expect(hydrated.recordingSession.present.steps).toHaveLength(1);
     expect(hydrated.recordingSession.present.steps[0]?.title).toBe('Fill Email');
     expect(hydrated.redactionRules).toHaveLength(1);
