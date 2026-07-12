@@ -1,5 +1,6 @@
 import { app, BrowserView, BrowserWindow, ipcMain } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
@@ -67,7 +68,9 @@ let runtimeHealth: BrowserRuntimeHealth = {
 };
 let inspectionModeEnabled = false;
 let workingCopyStorePromise: Promise<FileBackedSqliteStore> | null = null;
+let quittingAfterCleanup = false;
 
+configureElectronRuntime();
 app.commandLine.appendSwitch('remote-debugging-address', REMOTE_DEBUGGING_HOST);
 browserSessionManager.subscribe((event) => {
   publishRuntimeEvent(event);
@@ -282,6 +285,35 @@ function registerIpcHandlers(): void {
       Math.max(0, runtimeHealth.subscriberCount - 1),
     );
   });
+}
+
+function configureElectronRuntime(): void {
+  const runtimeRoot = join(
+    app.getPath('temp'),
+    'browser-blackbox',
+    'electron-runtime',
+    `session-${process.pid}`,
+  );
+  const userDataPath = join(runtimeRoot, 'user-data');
+  const sessionDataPath = join(runtimeRoot, 'session-data');
+  const crashDumpsPath = join(runtimeRoot, 'crash-dumps');
+  const logsPath = join(runtimeRoot, 'logs');
+
+  for (const path of [runtimeRoot, userDataPath, sessionDataPath, crashDumpsPath, logsPath]) {
+    mkdirSync(path, { recursive: true });
+  }
+
+  app.disableHardwareAcceleration();
+  app.setPath('userData', userDataPath);
+  app.setPath('sessionData', sessionDataPath);
+  app.setPath('crashDumps', crashDumpsPath);
+  app.setAppLogsPath(logsPath);
+  app.commandLine.appendSwitch('disable-gpu');
+  app.commandLine.appendSwitch('disable-gpu-compositing');
+  app.commandLine.appendSwitch('disable-gpu-process-crash-limit');
+  app.commandLine.appendSwitch('in-process-gpu');
+  app.commandLine.appendSwitch('use-angle', 'swiftshader');
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 }
 
 function attachWorkspaceBrowserView(window: BrowserWindow): void {
@@ -921,8 +953,30 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('before-quit', () => {
-  void browserSessionManager.stop();
+app.on('before-quit', (event) => {
+  if (quittingAfterCleanup) {
+    return;
+  }
+
+  event.preventDefault();
+  quittingAfterCleanup = true;
+  void browserSessionManager
+    .stop()
+    .catch((error) => {
+      publishRuntimeEvent({
+        id: randomUUID(),
+        timestamp: new Date().toISOString(),
+        category: 'lifecycle',
+        code: 'runtime.stop.failed_on_quit',
+        level: 'warn',
+        message: 'Managed browser session failed to stop cleanly during app shutdown.',
+        source: 'electron_shell',
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    })
+    .finally(() => {
+      app.quit();
+    });
 });
 
 async function bootstrapRemoteDebugging(): Promise<number> {

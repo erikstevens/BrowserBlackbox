@@ -50,7 +50,7 @@ test.describe('desktop acceptance', () => {
     await window.getByRole('button', { name: 'Launch managed Chromium' }).click();
 
     await expect(statusRowPill(window, 'Phase')).toContainText('running');
-    await expect(window.locator('.status-health-healthy')).toContainText('healthy');
+    await expect(statusRowPill(window, 'Health')).toContainText('healthy');
     await expect(window.getByText('Attached', { exact: true }).first()).toBeVisible();
     await expect(statusRowValue(window, 'Target')).toContainText(`${fixtureServer.origin}/`);
     await expect(statusRowValue(window, 'Page')).toContainText(`${fixtureServer.origin}/`);
@@ -80,8 +80,8 @@ test.describe('desktop acceptance', () => {
 
     await window.getByRole('button', { name: 'Stop session' }).click();
 
-    await expect(window.locator('.status-idle')).toContainText('idle');
-    await expect(window.locator('.status-health-idle')).toContainText('idle');
+    await expect(statusRowPill(window, 'Phase')).toContainText('idle');
+    await expect(statusRowPill(window, 'Health')).toContainText('idle');
     await expect(window.locator('.event-stream')).toContainText('Managed browser session stopped.');
 
     await expect

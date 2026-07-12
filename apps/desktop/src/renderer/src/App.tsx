@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  type BrowserContextSnapshot,
   domainVersions,
   productSummary,
   type CaptureBody,
@@ -1613,28 +1614,35 @@ export function App() {
                         </p>
                       ))}
                     </div>
-                    <div className="button-row">
-                      <button
-                        className="button button-secondary"
-                        type="button"
-                        onClick={() => addAssertionFromInspection('element-visible')}
-                      >
-                        Add visible assertion
-                      </button>
-                      <button
-                        className="button button-secondary"
-                        type="button"
-                        onClick={() => addAssertionFromInspection('element-contains-text')}
-                      >
-                        Add text assertion
-                      </button>
-                      <button
-                        className="button button-secondary"
-                        type="button"
-                        onClick={() => addClickStepFromInspection()}
-                      >
-                        Add click step
-                      </button>
+                    <div className="inspection-authoring-card">
+                      <p className="section-label">Author from inspection</p>
+                      <p className="panel-copy">
+                        Turn the pinned inspected target into a review step without
+                        retyping selectors.
+                      </p>
+                      <div className="authoring-action-grid">
+                        <button
+                          className="button button-secondary"
+                          type="button"
+                          onClick={() => addAssertionFromInspection('element-visible')}
+                        >
+                          Add visible assertion
+                        </button>
+                        <button
+                          className="button button-secondary"
+                          type="button"
+                          onClick={() => addAssertionFromInspection('element-contains-text')}
+                        >
+                          Add text assertion
+                        </button>
+                        <button
+                          className="button button-secondary"
+                          type="button"
+                          onClick={() => addClickStepFromInspection()}
+                        >
+                          Add click step
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1733,76 +1741,91 @@ export function App() {
                 </p>
               </div>
               <div className="recording-toolbar">
-                <button
-                  className="button button-secondary"
-                  disabled={!canUndo}
-                  onClick={() => undoRecordingEdit()}
-                >
-                  Undo
-                </button>
-                <button
-                  className="button button-secondary"
-                  disabled={!canRedo}
-                  onClick={() => redoRecordingEdit()}
-                >
-                  Redo
-                </button>
-                <button
-                  className="button button-secondary"
-                  onClick={() => insertStepAfterSelection('reload')}
-                >
-                  Insert reload
-                </button>
-                <select
-                  aria-label="Insert action type"
-                  className="field-input"
-                  value={pendingActionInsertType}
-                  onChange={(event) =>
-                    setPendingActionInsertType(event.target.value as SupportedActionType)
-                  }
-                >
-                  {SUPPORTED_ACTION_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="button button-secondary"
-                  onClick={() => addActionFromToolbar()}
-                >
-                  Insert action
-                </button>
-                <button
-                  className="button button-secondary"
-                  onClick={() => insertStepAfterSelection('assert-visible')}
-                >
-                  Assert visible
-                </button>
-                <button
-                  className="button button-secondary"
-                  onClick={() => insertStepAfterSelection('assert-enabled')}
-                >
-                  Assert enabled
-                </button>
-                <button
-                  className="button button-secondary"
-                  onClick={() => insertStepAfterSelection('assert-hidden')}
-                >
-                  Assert hidden
-                </button>
-                <button
-                  className="button button-secondary"
-                  onClick={() => insertStepAfterSelection('assert-text')}
-                >
-                  Assert text
-                </button>
-                <button
-                  className="button button-secondary"
-                  onClick={() => insertStepAfterSelection('url-assertion')}
-                >
-                  Insert URL assertion
-                </button>
+                <div className="authoring-cluster">
+                  <p className="authoring-cluster-label">History</p>
+                  <div className="authoring-action-grid">
+                    <button
+                      className="button button-secondary"
+                      disabled={!canUndo}
+                      onClick={() => undoRecordingEdit()}
+                    >
+                      Undo
+                    </button>
+                    <button
+                      className="button button-secondary"
+                      disabled={!canRedo}
+                      onClick={() => redoRecordingEdit()}
+                    >
+                      Redo
+                    </button>
+                  </div>
+                </div>
+                <div className="authoring-cluster authoring-cluster-wide">
+                  <p className="authoring-cluster-label">Compose action</p>
+                  <div className="authoring-action-grid authoring-action-grid-wide">
+                    <button
+                      className="button button-secondary"
+                      onClick={() => insertStepAfterSelection('reload')}
+                    >
+                      Quick reload
+                    </button>
+                    <select
+                      aria-label="Insert action type"
+                      className="field-input authoring-select"
+                      value={pendingActionInsertType}
+                      onChange={(event) =>
+                        setPendingActionInsertType(event.target.value as SupportedActionType)
+                      }
+                    >
+                      {SUPPORTED_ACTION_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className="button button-secondary"
+                      onClick={() => addActionFromToolbar()}
+                    >
+                      Insert action
+                    </button>
+                  </div>
+                </div>
+                <div className="authoring-cluster authoring-cluster-wide">
+                  <p className="authoring-cluster-label">Compose assertion</p>
+                  <div className="authoring-action-grid">
+                    <button
+                      className="button button-secondary"
+                      onClick={() => insertStepAfterSelection('assert-visible')}
+                    >
+                      Visible
+                    </button>
+                    <button
+                      className="button button-secondary"
+                      onClick={() => insertStepAfterSelection('assert-enabled')}
+                    >
+                      Enabled
+                    </button>
+                    <button
+                      className="button button-secondary"
+                      onClick={() => insertStepAfterSelection('assert-hidden')}
+                    >
+                      Hidden
+                    </button>
+                    <button
+                      className="button button-secondary"
+                      onClick={() => insertStepAfterSelection('assert-text')}
+                    >
+                      Text
+                    </button>
+                    <button
+                      className="button button-secondary"
+                      onClick={() => insertStepAfterSelection('url-assertion')}
+                    >
+                      URL
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1811,7 +1834,7 @@ export function App() {
                 {recordingSession.present.steps.map((step, index) => (
                   <button
                     key={step.id}
-                    className={`step-review-card${
+                    className={`step-review-card step-review-card-${step.kind} step-review-card-${step.status}${
                       step.id === recordingSession.selectedStepId
                         ? ' step-review-card-selected'
                         : ''
@@ -1820,19 +1843,38 @@ export function App() {
                     type="button"
                   >
                     <div className="step-review-header">
-                      <span className="step-index">Step {index + 1}</span>
-                      <span className={`status-pill status-${step.evidenceState}`}>
-                        {step.evidenceState}
-                      </span>
+                      <div className="step-review-meta">
+                        <span className="step-index">Step {index + 1}</span>
+                        <span className={`step-kind-pill step-kind-pill-${step.kind}`}>
+                          {step.kind}
+                        </span>
+                      </div>
+                      <div className="step-review-meta">
+                        <span className={`status-pill status-${step.evidenceState}`}>
+                          {step.evidenceState}
+                        </span>
+                        {step.status === 'disabled' ? (
+                          <span className="review-tag review-tag-warning">disabled</span>
+                        ) : null}
+                      </div>
                     </div>
                     <p className="step-title">{step.title}</p>
                     <p className="step-summary">{describeRecordedStep(step)}</p>
+                    <div className="step-review-signal-row">
+                      <span className={`step-signal-bar step-signal-bar-${step.evidenceState}`} />
+                      <span className="step-signal-copy">
+                        {describeEvidenceState(step.evidenceState)}
+                      </span>
+                    </div>
                     <div className="step-review-tags">
-                      <span className="review-tag">{step.kind}</span>
-                      <span className="review-tag">{step.status}</span>
                       {step.dependencyStepIds.length > 0 ? (
-                        <span className="review-tag">
+                        <span className="review-tag review-tag-dependency">
                           depends on {step.dependencyStepIds.length}
+                        </span>
+                      ) : null}
+                      {step.invalidatesEvidenceAfter ? (
+                        <span className="review-tag review-tag-warning">
+                          invalidates downstream evidence
                         </span>
                       ) : null}
                     </div>
@@ -1883,62 +1925,118 @@ export function App() {
                       </div>
                     </div>
 
-                    <div className="editor-form-grid">
-                      <label className="field-label" htmlFor="step-title">
-                        Step title
-                      </label>
-                      <input
-                        id="step-title"
-                        className="url-input"
-                        value={selectedRecordedStep.title}
-                        onChange={(event) =>
-                          replaceRecordedStepInReview(selectedRecordedStep.id, {
-                            ...selectedRecordedStep,
-                            title: event.target.value,
-                            updatedAt: new Date().toISOString(),
-                          })
-                        }
-                      />
+                    <div className="step-editor-layout">
+                      <div className="step-editor-panel">
+                        <p className="section-label">Step overview</p>
+                        <div className="step-editor-metadata">
+                          <p className="status-row">
+                            <span className="status-label">Kind</span>
+                            <span className="status-value">{selectedRecordedStep.kind}</span>
+                          </p>
+                          <p className="status-row">
+                            <span className="status-label">Status</span>
+                            <span className="status-value">{selectedRecordedStep.status}</span>
+                          </p>
+                          <p className="status-row">
+                            <span className="status-label">Evidence state</span>
+                            <span className="status-value">
+                              {selectedRecordedStep.evidenceState}
+                            </span>
+                          </p>
+                          <p className="status-row">
+                            <span className="status-label">Dependencies</span>
+                            <span className="status-value">
+                              {selectedRecordedStep.dependencyStepIds.length > 0
+                                ? selectedRecordedStep.dependencyStepIds.join(', ')
+                                : 'None'}
+                            </span>
+                          </p>
+                        </div>
+                        <div className="editor-form-grid">
+                          <label className="field-label" htmlFor="step-title">
+                            Step title
+                          </label>
+                          <input
+                            id="step-title"
+                            className="url-input"
+                            value={selectedRecordedStep.title}
+                            onChange={(event) =>
+                              replaceRecordedStepInReview(selectedRecordedStep.id, {
+                                ...selectedRecordedStep,
+                                title: event.target.value,
+                                updatedAt: new Date().toISOString(),
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
 
-                      {selectedRecordedStep.kind === 'action' ? (
-                        <ActionEditor
-                          inspectedLocator={
-                            currentInspection?.recommendations.primary.locator ?? null
-                          }
-                          step={selectedRecordedStep}
-                          onChange={(step) =>
-                            replaceRecordedStepInReview(selectedRecordedStep.id, step)
-                          }
-                        />
-                      ) : (
-                        <AssertionEditor
-                          inspectedLocator={
-                            currentInspection?.recommendations.primary.locator ?? null
-                          }
-                          inspectedText={
-                            currentInspection?.target.textContent ??
-                            currentInspection?.target.accessibleName ??
-                            null
-                          }
-                          step={selectedRecordedStep}
-                          onChange={(step) =>
-                            replaceRecordedStepInReview(selectedRecordedStep.id, step)
-                          }
-                        />
-                      )}
+                      <div className="step-editor-panel">
+                        <p className="section-label">Parameters</p>
+                        <p className="panel-copy">
+                          Edit the step details that will drive replay and export.
+                        </p>
+                        <div className="editor-form-grid">
+                          {selectedRecordedStep.kind === 'action' ? (
+                            <ActionEditor
+                              inspectedLocator={
+                                currentInspection?.recommendations.primary.locator ?? null
+                              }
+                              step={selectedRecordedStep}
+                              onChange={(step) =>
+                                replaceRecordedStepInReview(selectedRecordedStep.id, step)
+                              }
+                            />
+                          ) : (
+                            <AssertionEditor
+                              inspectedLocator={
+                                currentInspection?.recommendations.primary.locator ?? null
+                              }
+                              inspectedText={
+                                currentInspection?.target.textContent ??
+                                currentInspection?.target.accessibleName ??
+                                null
+                              }
+                              step={selectedRecordedStep}
+                              onChange={(step) =>
+                                replaceRecordedStepInReview(selectedRecordedStep.id, step)
+                              }
+                            />
+                          )}
+                        </div>
+                      </div>
                     </div>
 
                     <div className="step-editor-footer">
-                      <p className="panel-copy">
-                        Last mutation: {recordingSession.lastMutation.kind}. Affected
-                        steps: {recordingSession.lastMutation.affectedStepIds.join(', ') || 'none'}.
-                      </p>
-                      <p className="panel-copy">
-                        Invalidated checkpoints:{' '}
-                        {recordingSession.lastMutation.invalidatedCheckpointIds.join(', ') ||
-                          'none'}
-                        .
-                      </p>
+                      <p className="section-label">Replay impact</p>
+                      <div className="step-editor-impact-grid">
+                        <div className="step-editor-impact-card">
+                          <p className="status-row">
+                            <span className="status-label">Last mutation</span>
+                            <span className="status-value">
+                              {recordingSession.lastMutation.kind}
+                            </span>
+                          </p>
+                          <p className="panel-copy">
+                            Affected steps:{' '}
+                            {recordingSession.lastMutation.affectedStepIds.join(', ') || 'none'}.
+                          </p>
+                        </div>
+                        <div className="step-editor-impact-card">
+                          <p className="status-row">
+                            <span className="status-label">Checkpoint invalidation</span>
+                            <span className="status-value">
+                              {recordingSession.lastMutation.invalidatedCheckpointIds.length}
+                            </span>
+                          </p>
+                          <p className="panel-copy">
+                            Invalidated checkpoints:{' '}
+                            {recordingSession.lastMutation.invalidatedCheckpointIds.join(', ') ||
+                              'none'}
+                            .
+                          </p>
+                        </div>
+                      </div>
                     </div>
                   </>
                 ) : (
@@ -2303,6 +2401,10 @@ export function App() {
               <div className="step-review-list">
                 <div className="step-editor-shell">
                   <p className="section-label">Available checkpoints</p>
+                  <p className="panel-copy">
+                    Reusable checkpoints can shorten replay. Stale or metadata-only
+                    checkpoints remain visible so you can see why they are not safe to resume.
+                  </p>
                   <div className="checkpoint-list">
                     {recordingSession.present.checkpoints.length === 0 ? (
                       <p className="empty-state">
@@ -2313,7 +2415,7 @@ export function App() {
                         <button
                           key={checkpoint.id}
                           type="button"
-                          className={`step-review-card${
+                          className={`step-review-card replay-checkpoint-card replay-checkpoint-card-${describeCheckpointVisualState(checkpoint)}${
                             replayPlan?.checkpointId === checkpoint.id
                               ? ' step-review-card-selected'
                               : ''
@@ -2322,17 +2424,45 @@ export function App() {
                         >
                           <div className="step-review-header">
                             <span className="step-index">{checkpoint.kind}</span>
-                            <span className={`status-pill status-${checkpoint.status === 'valid' ? 'running' : 'error'}`}>
-                              {checkpoint.status}
-                            </span>
+                            <div className="step-review-meta">
+                              <span
+                                className={`status-pill status-${
+                                  checkpoint.status === 'valid' ? 'running' : 'error'
+                                }`}
+                              >
+                                {checkpoint.status}
+                              </span>
+                              <span
+                                className={`review-tag ${
+                                  checkpoint.snapshot
+                                    ? 'review-tag-checkpoint-ready'
+                                    : 'review-tag-warning'
+                                }`}
+                              >
+                                {checkpoint.snapshot ? 'snapshot ready' : 'metadata only'}
+                              </span>
+                            </div>
                           </div>
                           <p className="step-title">{checkpoint.label}</p>
-                          <p className="step-summary">
-                            Step: {checkpoint.stepId}
-                          </p>
-                          <p className="step-summary">
-                            Snapshot: {checkpoint.snapshot ? 'ready' : 'metadata only'}
-                          </p>
+                          <p className="step-summary">Bound to {checkpoint.stepId}</p>
+                          <div className="step-review-signal-row">
+                            <span
+                              className={`step-signal-bar replay-signal-bar-${describeCheckpointVisualState(checkpoint)}`}
+                            />
+                            <span className="step-signal-copy">
+                              {describeCheckpointResumeSummary(checkpoint)}
+                            </span>
+                          </div>
+                          <div className="step-review-tags">
+                            <span className="review-tag review-tag-dependency">
+                              covers {checkpoint.dependencyStepIds.length} step(s)
+                            </span>
+                            {countCheckpointCaptureSurfaces(checkpoint.captures) > 0 ? (
+                              <span className="review-tag">
+                                captures {countCheckpointCaptureSurfaces(checkpoint.captures)}
+                              </span>
+                            ) : null}
+                          </div>
                           {checkpoint.invalidationReasons.length > 0 ? (
                             <p className="step-summary">
                               {checkpoint.invalidationReasons.join(' ')}
@@ -2348,38 +2478,88 @@ export function App() {
               <div className="step-editor-shell">
                 <p className="section-label">Replay plan</p>
                 {replayPlan ? (
-                  <div className="replay-plan-grid">
-                    <p className="status-row">
-                      <span className="status-label">Mode</span>
-                      <span className="status-value">{replayPlan.mode}</span>
-                    </p>
-                    <p className="status-row">
-                      <span className="status-label">Start strategy</span>
-                      <span className="status-value">{replayPlan.startStrategy}</span>
-                    </p>
-                    <p className="status-row">
-                      <span className="status-label">Checkpoint</span>
-                      <span className="status-value">
-                        {replayPlan.checkpointId ?? 'No checkpoint selected'}
-                      </span>
-                    </p>
-                    <p className="status-row">
-                      <span className="status-label">Target step</span>
-                      <span className="status-value">
-                        {replayPlan.targetStepId ?? 'Full flow'}
-                      </span>
-                    </p>
-                    <p className="status-row">
-                      <span className="status-label">Checkpoint status</span>
-                      <span className="status-value">{replayPlan.checkpointStatus}</span>
-                    </p>
-                    <p className="panel-copy">{replayPlan.checkpointReason}</p>
-                    <div className="step-review-tags">
-                      {replayPlan.executionStepIds.map((stepId) => (
-                        <span className="review-tag" key={stepId}>
-                          {stepId}
+                  <div className="replay-plan-layout">
+                    <div className="replay-plan-overview">
+                      <div className="replay-plan-hero">
+                        <div>
+                          <p className="section-label">Execution summary</p>
+                          <h3 className="step-editor-title replay-plan-title">
+                            {describeReplayHeadline(replayPlan)}
+                          </h3>
+                        </div>
+                        <span
+                          className={`status-pill status-${
+                            replayPlan.startStrategy === 'checkpoint'
+                              ? 'running'
+                              : 'launching'
+                          }`}
+                        >
+                          {replayPlan.startStrategy}
                         </span>
-                      ))}
+                      </div>
+                      <p className="panel-copy">{replayPlan.checkpointReason}</p>
+                      <div className="replay-plan-pill-row">
+                        <span className="review-tag">{replayPlan.mode}</span>
+                        <span className="review-tag">
+                          {replayPlan.executionStepIds.length} step(s) queued
+                        </span>
+                        <span
+                          className={`review-tag ${
+                            replayPlan.checkpointStatus === 'valid'
+                              ? 'review-tag-checkpoint-ready'
+                              : replayPlan.checkpointStatus === 'stale'
+                                ? 'review-tag-warning'
+                                : ''
+                          }`}
+                        >
+                          checkpoint {replayPlan.checkpointStatus}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="replay-plan-grid">
+                      <p className="status-row">
+                        <span className="status-label">Mode</span>
+                        <span className="status-value">{replayPlan.mode}</span>
+                      </p>
+                      <p className="status-row">
+                        <span className="status-label">Start strategy</span>
+                        <span className="status-value">{replayPlan.startStrategy}</span>
+                      </p>
+                      <p className="status-row">
+                        <span className="status-label">Checkpoint</span>
+                        <span className="status-value">
+                          {replayPlan.checkpointId ?? 'No checkpoint selected'}
+                        </span>
+                      </p>
+                      <p className="status-row">
+                        <span className="status-label">Target step</span>
+                        <span className="status-value">
+                          {replayPlan.targetStepId ?? 'Full flow'}
+                        </span>
+                      </p>
+                      <p className="status-row">
+                        <span className="status-label">Checkpoint status</span>
+                        <span className="status-value">{replayPlan.checkpointStatus}</span>
+                      </p>
+                    </div>
+
+                    <div className="replay-plan-execution-card">
+                      <p className="section-label">Execution scope</p>
+                      {replayPlan.executionStepIds.length === 0 ? (
+                        <p className="empty-state">
+                          No step execution is required from the selected replay entry point.
+                        </p>
+                      ) : (
+                        <div className="replay-step-list">
+                          {replayPlan.executionStepIds.map((stepId, index) => (
+                            <div className="replay-step-chip" key={stepId}>
+                              <span className="step-index">Run {index + 1}</span>
+                              <span className="status-value">{stepId}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ) : (
@@ -2682,6 +2862,74 @@ function formatRequestLabel(url: string): string {
   } catch {
     return url;
   }
+}
+
+function describeEvidenceState(
+  state: RecordedStep['evidenceState'],
+): string {
+  switch (state) {
+    case 'current':
+      return 'Evidence is current for this step.';
+    case 'stale':
+      return 'Evidence is stale and should be replayed.';
+    case 'pending-regeneration':
+      return 'Replay is expected to refresh this evidence.';
+  }
+}
+
+function describeCheckpointVisualState(
+  checkpoint: {
+    status: 'valid' | 'stale';
+    snapshot?: BrowserContextSnapshot;
+  },
+): 'ready' | 'metadata' | 'stale' {
+  if (checkpoint.status !== 'valid') {
+    return 'stale';
+  }
+
+  return checkpoint.snapshot ? 'ready' : 'metadata';
+}
+
+function describeCheckpointResumeSummary(
+  checkpoint: {
+    status: 'valid' | 'stale';
+    snapshot?: BrowserContextSnapshot;
+  },
+): string {
+  const visualState = describeCheckpointVisualState(checkpoint);
+
+  switch (visualState) {
+    case 'ready':
+      return 'Replay can resume directly from this checkpoint.';
+    case 'metadata':
+      return 'Checkpoint is known, but replay must restart because no snapshot is stored.';
+    case 'stale':
+      return 'Checkpoint is stale and should not be trusted for resume.';
+  }
+}
+
+function describeReplayHeadline(replayPlan: {
+  mode: string;
+  startStrategy: 'start' | 'checkpoint';
+  executionStepIds: string[];
+}): string {
+  if (replayPlan.executionStepIds.length === 0) {
+    return replayPlan.startStrategy === 'checkpoint'
+      ? 'Resume without additional steps'
+      : 'Fresh browser context only';
+  }
+
+  return replayPlan.startStrategy === 'checkpoint'
+    ? `Resume and run ${replayPlan.executionStepIds.length} step(s)`
+    : `Restart and run ${replayPlan.executionStepIds.length} step(s)`;
+}
+
+function countCheckpointCaptureSurfaces(captures: {
+  cookies: boolean;
+  localStorage: boolean;
+  sessionStorage: boolean;
+}): number {
+  return Object.values(captures).filter(Boolean).length;
 }
 
 function describeRuleTargetPlaceholder(kind: RedactionRule['kind']): string {
